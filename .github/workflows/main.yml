@@ -1,12 +1,19 @@
-
 name: Crisis Dashboard Automation
 
 on:
-  # Manual trigger button in Actions tab
   workflow_dispatch:
-  # (Optional) uncomment to auto-run every weekday at 06:00 UTC
+  # Optional schedule (uncomment to auto-run every weekday at 06:00 UTC)
   # schedule:
   #   - cron: '0 6 * * 1-5'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   build-and-render:
@@ -36,6 +43,7 @@ jobs:
         run: |
           python pipeline/compute_dashboard.py
 
+      # (Optional) keep artifacts for inspection
       - name: Upload data artifact
         uses: actions/upload-artifact@v4
         with:
@@ -47,3 +55,20 @@ jobs:
         with:
           name: dashboard-html
           path: output/index.html
+
+      # Package site for Pages (we deploy the entire output/ folder)
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+  deploy:
+    needs: build-and-render
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
