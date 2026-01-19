@@ -25,21 +25,94 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Print runner environment
+        run: |
+          set -euxo pipefail
+          echo "---- OS & shell ----"
+          uname -a
+          echo "SHELL=$SHELL"
+          echo "---- Working directory ----"
+          pwd
+          echo "---- Tree (repo root) ----"
+          ls -la
+          echo "---- Python on path (before setup) ----"
+          command -v python || true
+          python --version || true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install dependencies (requests, pandas, numpy, pandasdmx)
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install requests pandas numpy pandasdmx
+          echo "---- pip show pandasdmx ----"
+          pip show pandasdmx || true
+          echo "---- pip freeze (grep sdmx) ----"
+          pip freeze | grep -i sdmx || true
+
+      - name: Verify repository layout and adapter source
+        run: |
+          set -euxo pipefail
+          echo "---- List directories ----"
+          ls -la
+          echo "---- List ingestors/ ----"
+          ls -la ingestors || true
+          echo "---- Show ingestors/__init__.py ----"
+          sed -n '1,120p' ingestors/__init__.py || true
+          echo "---- Show ingestors/ecb_sdmx.py ----"
+          sed -n '1,200p' ingestors/ecb_sdmx.py || true
+          echo "---- Show pipeline/update_ecb_data.py ----"
+          sed -n '1,200p' pipeline/update_ecb_data.py || true
+
+      - name: 🔎 Inline ECB SDMX diagnostic (import + dataflow + tiny EXR pull)
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import sys, importlib
+          print("Python:", sys.version)
+          print("sys.path[0:3]:", sys.path[0:3])
+
+          # 1) Import pandasdmx and show version + Request
+          import pandasdmx as sdmx
+          print("pandasdmx module:", sdmx)
+          try:
+              v = getattr(sdmx, "__version__", "UNKNOWN")
+          except Exception:
+              v = "UNKNOWN"
+          print("pandasdmx version:", v)
+          from pandasdmx import Request, to_pandas
+          print("Request class:", Request)
+
+          # 2) Create ECB client and list dataflows (top few)
+          client = Request('ECB')
+          flows_msg = client.dataflow()
+          flows = to_pandas(flows_msg.dataflow)
+          print("ECB dataflows head():")
+          try:
+              print(flows.head(10))
+          except Exception as e:
+              print("flows to_pandas head failed:", e)
+
+          # 3) Tiny EXR query: monthly USD per EUR reference rate
+          #    EXR key format: FREQ.CURRENCY.CURRENCY_DENOM.EXR_TYPE.EXR_SUFFIX  (e.g., M.USD.EUR.SP00.A)
+          msg = client.data(resource_id='EXR', key='M.USD.EUR.SP00.A', params={'startPeriod':'2010-01'})
+          ser = to_pandas(msg)
+          df = ser.reset_index()
+          print("EXR sample frame columns:", df.columns.tolist())
+          print("EXR sample size:", len(df))
+          print("EXR sample head:")
+          print(df.head(5))
+          PY
 
       - name: Download FRED data
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
-          set -e
+          set -euxo pipefail
           python pipeline/update_fred_data.py
           echo "---- List data dir ----"
           ls -l data || true
@@ -49,16 +122,16 @@ jobs:
             head -n 5 "$f" || true
           done
 
-      - name: Download ECB EXR data
+      - name: Download ECB EXR data (pipeline script)
         run: |
-          set -e
+          set -euxo pipefail
           python pipeline/update_ecb_data.py
           echo "---- Show first 5 lines of ECB CSV ----"
           head -n 5 data/eur_usd_ecb.csv || true
 
       - name: Generate dashboard HTML
         run: |
-          set -e
+          set -euxo pipefail
           python pipeline/compute_dashboard.py
           echo "---- List output dir ----"
           ls -l output || true
@@ -68,7 +141,7 @@ jobs:
       - name: Upload data artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fred-data
+          name: collected-data
           path: data/*.csv
 
       - name: Upload dashboard HTML
