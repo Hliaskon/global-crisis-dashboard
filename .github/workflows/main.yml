@@ -18,6 +18,9 @@ concurrency:
 jobs:
   build-and-render:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+
 
     steps:
       - name: Checkout repository
