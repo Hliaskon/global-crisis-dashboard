@@ -1,10 +1,10 @@
-
 name: Crisis Dashboard Automation
+
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 6 * * 1-5'
+  schedule:
+    - cron: '0 6 * * 1-5'
 
 permissions:
   contents: read
