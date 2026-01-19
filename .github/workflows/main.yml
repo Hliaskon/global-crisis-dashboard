@@ -1,8 +1,8 @@
+
 name: Crisis Dashboard Automation
 
 on:
   workflow_dispatch:
-  # Optional schedule (uncomment to auto-run every weekday at 06:00 UTC)
   # schedule:
   #   - cron: '0 6 * * 1-5'
 
@@ -37,13 +37,25 @@ jobs:
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
+          set -e
           python pipeline/update_fred_data.py
+          echo "---- List data dir ----"
+          ls -l data || true
+          echo "---- Show first 5 lines of each CSV ----"
+          for f in data/*.csv; do
+            echo "FILE: $f"
+            head -n 5 "$f" || true
+          done
 
       - name: Generate dashboard HTML
         run: |
+          set -e
           python pipeline/compute_dashboard.py
+          echo "---- List output dir ----"
+          ls -l output || true
+          echo "---- Preview top of index.html ----"
+          head -n 40 output/index.html || true
 
-      # (Optional) keep artifacts for inspection
       - name: Upload data artifact
         uses: actions/upload-artifact@v4
         with:
@@ -56,7 +68,6 @@ jobs:
           name: dashboard-html
           path: output/index.html
 
-      # Package site for Pages (we deploy the entire output/ folder)
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
