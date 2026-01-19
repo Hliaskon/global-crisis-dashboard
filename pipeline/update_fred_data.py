@@ -35,4 +35,4 @@ for name, series_id in SERIES.items():
                 writer.writerow([obs["date"], obs["value"]])
 
 print("✅ FRED data downloaded successfully")
-``
+
