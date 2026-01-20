@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install requests pandas numpy pandasdmx
+          pip install requests pandas numpy pandas
           echo "---- pip show pandasdmx ----"
           pip show pandasdmx || true
           echo "---- pip freeze (grep sdmx) ----"
@@ -67,46 +67,6 @@ jobs:
           sed -n '1,200p' ingestors/ecb_sdmx.py || true
           echo "---- Show pipeline/update_ecb_data.py ----"
           sed -n '1,200p' pipeline/update_ecb_data.py || true
-
-      - name: 🔎 Inline ECB SDMX diagnostic (import + dataflow + tiny EXR pull)
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
-          import sys, importlib
-          print("Python:", sys.version)
-          print("sys.path[0:3]:", sys.path[0:3])
-
-          # 1) Import pandasdmx and show version + Request
-          import pandasdmx as sdmx
-          print("pandasdmx module:", sdmx)
-          try:
-              v = getattr(sdmx, "__version__", "UNKNOWN")
-          except Exception:
-              v = "UNKNOWN"
-          print("pandasdmx version:", v)
-          from pandasdmx import Request, to_pandas
-          print("Request class:", Request)
-
-          # 2) Create ECB client and list dataflows (top few)
-          client = Request('ECB')
-          flows_msg = client.dataflow()
-          flows = to_pandas(flows_msg.dataflow)
-          print("ECB dataflows head():")
-          try:
-              print(flows.head(10))
-          except Exception as e:
-              print("flows to_pandas head failed:", e)
-
-          # 3) Tiny EXR query: monthly USD per EUR reference rate
-          #    EXR key format: FREQ.CURRENCY.CURRENCY_DENOM.EXR_TYPE.EXR_SUFFIX  (e.g., M.USD.EUR.SP00.A)
-          msg = client.data(resource_id='EXR', key='M.USD.EUR.SP00.A', params={'startPeriod':'2010-01'})
-          ser = to_pandas(msg)
-          df = ser.reset_index()
-          print("EXR sample frame columns:", df.columns.tolist())
-          print("EXR sample size:", len(df))
-          print("EXR sample head:")
-          print(df.head(5))
-          PY
 
       - name: Download FRED data
         env:
