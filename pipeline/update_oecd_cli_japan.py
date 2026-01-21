@@ -1,4 +1,6 @@
-import os, io
+
+import os
+import io
 import pandas as pd
 import requests
 
@@ -7,9 +9,15 @@ URL = "https://stats.oecd.org/SDMX-JSON/data/MEI_CLI/LOLITOAA.JPN.M/all?contentT
 
 def main():
     os.makedirs("data", exist_ok=True)
+
+    # Download CSV (SDMX-JSON endpoint with CSV output)
     r = requests.get(URL, timeout=60)
     r.raise_for_status()
+
+    # Parse CSV from memory
     df = pd.read_csv(io.StringIO(r.text))
+
+    # Expect TIME_PERIOD and OBS_VALUE columns from OECD CSV
     if not {"TIME_PERIOD", "OBS_VALUE"}.issubset(df.columns):
         raise RuntimeError(f"Unexpected OECD CSV columns: {df.columns.tolist()}")
 
@@ -27,5 +35,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-``
-
