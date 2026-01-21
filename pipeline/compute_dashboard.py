@@ -386,6 +386,7 @@ th{background:#f4f6f8;}
 .pos{color:#b71c1c;} .neg{color:#1b5e20;}
 .small{color:#666;font-size:12px}
 td svg{display:block}
+svg { margin-top: 6px; }
 </style>
 """)
 html.append("</head><body>")
@@ -398,6 +399,13 @@ if level == "WATCH": badge = "<span class='badge watch'>WATCH</span>"
 if level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
 comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
+
+
+# --- Composite history (3y) ---
+comp_hist = composite_history_series(series_map, tail_weeks=156, min_count=2)
+html.append("<h3>Composite history (3y)</h3>")
+html.append(composite_chart_svg(comp_hist, width=560, height=140))
+
 
 # ---- Contributors table (with Δ vs prev)
 html.append("<h3>Contributors (sign‑adjusted Z)</h3>")
