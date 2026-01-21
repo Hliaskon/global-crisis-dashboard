@@ -172,6 +172,10 @@ series_map = {
     "ECB USD per EUR (monthly)": "eur_usd_ecb.csv",
     "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
     "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
+   # NEW — Japan
+    "USD/JPY (derived, ECB monthly)": "usd_jpy_ecb.csv",
+    "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv
+
 }
 
 # -------------------------------
@@ -355,6 +359,61 @@ for label in china_labels:
     svg = spark_from_file(series_map[label], tail_points=52)
     html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
 html.append("</table>")
+
+
+# ---- Japan block with subscore + sparklines ----
+if "japan" in CFG["indicators"]:
+    jp_labels = CFG["indicators"]["japan"]
+    # Compute Japan subscore from config weights (default 60/40)
+    jp_items = [
+        ("OECD Japan CLI (amplitude adj., SA)", "negative_is_risky", float(CFG["weights"]["japan"]["cli"])),
+        ("USD/JPY (derived, ECB monthly)", "positive_is_risky", float(CFG["weights"]["japan"]["usdjpy"])),
+    ]
+    jp_scores = []
+    for lbl, direction, w in jp_items:
+        path = DATA_DIR / series_map[lbl]
+        if not path.exists():
+            continue
+        s = load_series(path, weekly_resample=True)
+        if s.empty:
+            continue
+        zs = zscore(s)
+        z_last = zs.iloc[-1] if len(zs) else np.nan
+        if np.isnan(z_last):
+            continue
+        score = -float(z_last) if direction == "negative_is_risky" else float(z_last)
+        jp_scores.append((score, w))
+    jp_sub = np.nan
+    if jp_scores:
+        tw = sum(w for _, w in jp_scores)
+        if tw > 0:
+            jp_sub = sum(sc*w for sc, w in jp_scores) / tw
+    jp_level = "OK"
+    if not np.isnan(jp_sub):
+        if jp_sub >= TH_CHINA_ALERT:  # reuse thresholds
+            jp_level = "ALERT"
+        elif jp_sub >= TH_CHINA_WATCH:
+            jp_level = "WATCH"
+
+    html.append("<h3>Japan</h3>")
+    badge_jp = "<span class='badge ok'>OK</span>"
+    if jp_level == "WATCH": badge_jp = "<span class='badge watch'>WATCH</span>"
+    if jp_level == "ALERT": badge_jp = "<span class='badge alert'>ALERT</span>"
+    jp_str = "-" if np.isnan(jp_sub) else f"{jp_sub:.2f}"
+    html.append(f"<p><b>Japan Subscore:</b> {jp_str} {badge_jp}</p>")
+
+    html.append("<table><tr>"
+                "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
+                "<th>Z-Score</th><th>Sparkline (52w)</th>"
+                "</tr>")
+    for lbl in jp_labels:
+        rows = [r for r in display_rows if r[0] == lbl]
+        if not rows:
+            continue
+        r = rows[0]
+        svg = spark_from_file(series_map[lbl], tail_points=52)
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
+    html.append("</table>")
 
 html.append(
     "<p class='small'>Notes: Contributions use the same direction rules as the composite: "
