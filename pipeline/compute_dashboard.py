@@ -1,3 +1,4 @@
+
 import os
 import json
 import pandas as pd
@@ -20,7 +21,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # -------------------------------
 DEFAULTS = {
     "windows": {
-        "zscore_lookback_weeks": 260,
+        "zscore_lookback_weeks": 260,  # ~5 years of weekly points
     },
     "thresholds": {
         "composite_watch": 1.0,
@@ -30,8 +31,8 @@ DEFAULTS = {
     },
     "weights": {
         "china": {
-            "cli": 0.60,
-            "usdcny": 0.40,
+            "cli": 0.60,     # OECD China CLI (amplitude adj., SA)
+            "usdcny": 0.40,  # USD/CNY (derived from ECB)
         }
     },
     "indicators": {
@@ -57,25 +58,23 @@ if yaml is not None and cfg_path.exists():
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
-        # shallow merge for our simple structure
+        # shallow merge
         for k in DEFAULTS:
             if isinstance(DEFAULTS[k], dict):
                 CFG[k] = {**DEFAULTS[k], **(user_cfg.get(k, {}) or {})}
             else:
                 CFG[k] = user_cfg.get(k, DEFAULTS[k])
-        # nested china weights merge
-        if "weights" in user_cfg and "china" in user_cfg["weights"]:
+        # nested merges
+        if "weights" in user_cfg and "china" in (user_cfg["weights"] or {}):
             CFG["weights"]["china"] = {
                 **DEFAULTS["weights"]["china"],
                 **(user_cfg["weights"]["china"] or {}),
             }
-        # nested indicators merge
         if "indicators" in user_cfg:
             for sec, lst in (user_cfg["indicators"] or {}).items():
                 if isinstance(lst, list) and lst:
                     CFG["indicators"][sec] = lst
     except Exception as e:
-        # fall back silently to defaults
         print(f"⚠️  Failed to read config.yaml; using defaults. Error: {e}")
 
 LOOKBACK = int(CFG["windows"]["zscore_lookback_weeks"])
@@ -146,6 +145,23 @@ def spark_from_file(file_name: str, tail_points: int = 52) -> str:
     return sparkline_svg(s.tail(tail_points).tolist())
 
 
+def direction_for_label(label: str):
+    """Return (direction_name, sign) for contribution mapping."""
+    if "Yield Curve" in label:
+        return "negative_is_risky", -1
+    if "HY OAS" in label:
+        return "positive_is_risky", +1
+    if "Unemployment" in label:
+        return "positive_is_risky", +1
+    if "USD per EUR" in label:
+        return "positive_is_risky", +1
+    if "USD/CNY" in label:
+        return "positive_is_risky", +1
+    if "China CLI" in label:
+        return "negative_is_risky", -1
+    return "ambiguous", +1  # fallback
+
+
 # -------------------------------
 # Indicator map (file names)
 # -------------------------------
@@ -159,10 +175,11 @@ series_map = {
 }
 
 # -------------------------------
-# Compute latest readings and global composite
+# Compute latest readings, composite and contributions
 # -------------------------------
 display_rows = []
 z_values = []
+contrib_rows = []  # (label, last_z, direction_name, contribution)
 
 for label, fname in series_map.items():
     path = DATA_DIR / fname
@@ -184,21 +201,13 @@ for label, fname in series_map.items():
         (label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}")
     )
 
-    # Direction mapping
     if not np.isnan(last_z):
-        if "Yield Curve" in label:
-            z_values.append(-last_z)          # more inversion => risk↑
-        elif "HY OAS" in label:
-            z_values.append(last_z)           # spreads↑ => risk↑
-        elif "Unemployment" in label:
-            z_values.append(last_z)           # unemployment↑ => risk↑
-        elif "USD per EUR" in label:
-            z_values.append(last_z)           # USD stronger => risk↑
-        elif "USD/CNY" in label:
-            z_values.append(last_z)           # USD/CNY↑ => risk↑
-        elif "China CLI" in label:
-            z_values.append(-last_z)          # CLI below trend => risk↑
+        dir_name, sign = direction_for_label(label)
+        contribution = sign * float(last_z)  # sign-adjusted z used by composite
+        contrib_rows.append((label, float(last_z), dir_name, contribution))
+        z_values.append(contribution)
 
+# Global composite (mean of contributions)
 composite = np.nan if not z_values else float(np.mean(z_values))
 level = "OK"
 if not np.isnan(composite):
@@ -206,6 +215,11 @@ if not np.isnan(composite):
         level = "ALERT"
     elif composite >= TH_COMPOSITE_WATCH:
         level = "WATCH"
+
+# Rank contributors by absolute impact
+contrib_clean = [(l, z, d, c) for (l, z, d, c) in contrib_rows if not np.isnan(c)]
+abs_sum = sum(abs(c) for (_, _, _, c) in contrib_clean) or 0.0
+contributors_sorted = sorted(contrib_clean, key=lambda t: abs(t[3]), reverse=True)
 
 # -------------------------------
 # China sub-bucket (config weights)
@@ -258,6 +272,7 @@ th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:middle;}
 th{background:#f4f6f8;}
 .badge{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px;}
 .ok{background:#e8f5e9;} .watch{background:#fff8e1;} .alert{background:#ffebee;}
+.pos{color:#b71c1c;} .neg{color:#1b5e20;}
 .small{color:#666;font-size:12px}
 td svg{display:block}
 </style>
@@ -266,13 +281,34 @@ html.append("</head><body>")
 html.append("<h1>Global Crisis Early Warning – Prototype</h1>")
 html.append(f"<p class='small'>Generated: {now}</p>")
 
+# Composite badge
 badge = "<span class='badge ok'>OK</span>"
 if level == "WATCH": badge = "<span class='badge watch'>WATCH</span>"
 if level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
 comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
 
-# Determine which items to show in the US+ECB table from config (and keep order)
+# ---- Contributors table (sign-adjusted z contributions)
+html.append("<h3>Contributors (sign‑adjusted Z)</h3>")
+html.append("<table><tr>"
+            "<th>Indicator</th><th>Z‑score</th><th>Direction</th><th>Contribution</th><th>Share</th>"
+            "</tr>")
+if contributors_sorted:
+    for label, z, d, c in contributors_sorted:
+        cls = "pos" if c >= 0 else "neg"
+        share = "-" if abs_sum == 0 else f"{(abs(c)/abs_sum)*100:.0f}%"
+        html.append(
+            f"<tr><td>{label}</td>"
+            f"<td>{z:+.2f}</td>"
+            f"<td>{d.replace('_',' ')}</td>"
+            f"<td class='{cls}'>{c:+.2f}</td>"
+            f"<td>{share}</td></tr>"
+        )
+else:
+    html.append("<tr><td colspan='5'>No contributions available.</td></tr>")
+html.append("</table>")
+
+# ---- US + ECB table
 us_ecb_labels = CFG["indicators"]["table_us_ecb"]
 html.append("<h3>Key Indicators (US + ECB)</h3>")
 html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th></tr>")
@@ -281,7 +317,7 @@ for r in display_rows:
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>")
 html.append("</table>")
 
-# China block
+# ---- China block with subscore + sparklines
 china_labels = CFG["indicators"]["china"]
 html.append("<h3>China</h3>")
 badge_cn = "<span class='badge ok'>OK</span>"
@@ -295,7 +331,6 @@ html.append("<table><tr>"
             "<th>Z-Score</th><th>Sparkline (52w)</th>"
             "</tr>")
 for label in china_labels:
-    # find the row in display_rows
     rows = [r for r in display_rows if r[0] == label]
     if not rows:
         continue
@@ -305,10 +340,10 @@ for label in china_labels:
 html.append("</table>")
 
 html.append(
-    "<p class='small'>Notes: Z-scores use a rolling window. Direction mapping — "
-    "curve inversion (more negative) = risk; HY OAS ↑ = risk; unemployment ↑ = risk; "
-    "USD per EUR ↑ = risk (USD strength); China CLI below trend → risk. "
-    "Edit <code>config.yaml</code> to adjust thresholds, lookback and weights.</p>"
+    "<p class='small'>Notes: Contributions use the same direction rules as the composite: "
+    "curve inversion (more negative) = risk↑; HY OAS ↑ = risk↑; unemployment ↑ = risk↑; "
+    "USD per EUR ↑ = risk↑; USD/CNY ↑ = risk↑; China CLI below trend = risk↑. "
+    "Edit <code>config.yaml</code> to adjust thresholds, lookback, and weights.</p>"
 )
 
 html.append("</body></html>")
