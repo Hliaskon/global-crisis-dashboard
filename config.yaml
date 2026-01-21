@@ -14,12 +14,18 @@ weights:
     fx: 0.40
 
 # What to show in the main "US + ECB" table
+
 indicators:
   table_us_ecb:
     - "US Yield Curve 10Y–3M (bps)"
     - "US Unemployment Rate (%)"
     - "US HY OAS (bps)"
     - "USD per EUR (ECB)"
+    - "Gold (LBMA, USD/oz)"
+    - "Brent crude (USD/bbl)"
+    - "S&P 500 index (close)"
+    - "Policy rate – United States (BIS)"
+    - "10Y yield – United States (OECD)"
 
 # Countries (each has CLI + an FX)
 countries:
