@@ -17,10 +17,14 @@ weights:
     
   eurozone:
     cli: 0.60          # OECD Euro Area CLI
-    usdeur: 0.40       # USD per EUR (ECB)
-
-
-
+    usdeur: 0.40       # USD per EUR (ECB)  
+  uk:
+    cli: 0.60
+    usdgbp: 0.40
+  canada:
+    cli: 0.60
+    usdcad: 0.40
+  
 indicators:
   table_us_ecb:                 # for the "Key Indicators (US + ECB)" section
     - "US Yield Curve 10Y–3M (bps)"
@@ -37,6 +41,13 @@ indicators:
    
   eurozone:
     - "OECD Euro Area CLI (amplitude adj., SA)"
-    - "ECB USD per EUR (monthly)"
+    - "ECB USD per EUR (monthly)"  
+  uk:
+    - "OECD UK CLI (amplitude adj., SA)"
+    - "USD/GBP (derived, ECB monthly)"
+  canada:
+    - "OECD Canada CLI (amplitude adj., SA)"
+    - "USD/CAD (derived, ECB monthly)"
+  
  
 
