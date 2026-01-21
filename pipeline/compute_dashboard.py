@@ -165,6 +165,18 @@ def direction_for_label(label: str):
         return "negative_is_risky", -1
     return "ambiguous", +1
 
+
+def human_direction(direction_name: str) -> str:
+    """
+    Map internal direction flags to friendly wording.
+    """
+    if direction_name == "negative_is_risky":
+        return "Below trend → higher risk"
+    if direction_name == "positive_is_risky":
+        return "Rising → higher risk"
+    return "—"
+
+
 # ---------------------
 # Build readings & composite
 # ---------------------
@@ -301,6 +313,7 @@ html.append("<title>Global Crisis Early Warning – Dashboard</title>")
 html.append("""
 <style>
 body{font-family:Arial,Helvetica,sans-serif;margin:24px;}
+h3.section { color:#2f3b49; 
 table{border-collapse:collapse;margin-top:12px;}
 th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:middle;}
 th{background:#f4f6f8;}
@@ -361,7 +374,20 @@ caption {
 """)
 html.append("</head><body>")
 html.append("<h1>Global Crisis Early Warning – Dashboard</h1>")
-html.append(f"<p class='small'>Generated: {now}</p>")
+
+html.append(
+    "<div style='margin:18px 0 12px 0;padding:14px 16px;border:1px solid #e0e0e0;"
+    "border-radius:10px;background:#fafbfc;'>"
+    "<div style='font-size:13px;color:#666;margin-bottom:4px;'>🌍 Global Composite Risk</div>"
+    f"<div style='display:flex;align-items:center;gap:12px;'>"
+    f"<div style='font-size:36px;line-height:1.0;font-weight:600;'>{comp_str}</div>"
+    f"{badge}"
+    "</div>"
+    "<div class='small' style='margin-top:6px;color:#777;'>"
+    "WATCH ≥ +1σ, ALERT ≥ +2σ (configurable in <code>config.yaml</code>)"
+    "</div>"
+    "</div>"
+)
 
 badge = "<span class='badge ok'>OK</span>"
 if level == "WATCH":
@@ -384,7 +410,7 @@ if contributors_sorted:
         html.append(
             f"<tr><td>{lbl}</td>"
             f"<td class='num'>{z:+.2f}</td>"
-            f"<td>{dname.replace('_',' ')}</td>"
+            f"<td>{human_direction(dname)}</td>"
             f"<td class='num {cls}'>{c:+.2f}</td>"
             f"<td class='num {cls_d}'>{delta:+.2f}</td>"
             f"<td class='num'>{share}</td></tr>"
