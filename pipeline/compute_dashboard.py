@@ -203,5 +203,16 @@ html.append("<p class='small'>Notes: Z-scores use a rolling historical window. D
 
 html.append("</body></html>")
 
-OUT_DIR.joinpath("index.html").write_text("\n".join(html), encoding="utf-8")
-print("✅ Wrote output/index.html")
+# (after) OUT_DIR.joinpath("index.html").write_text(...)
+
+# --- Persist state for automation (ALERT/WATCH) ---
+import json
+state = {
+    "generated_utc": now,                    # e.g., "2026-01-21 08:10 UTC"
+    "composite": None if np.isnan(composite) else round(float(composite), 3),
+    "composite_level": level,                # "OK" | "WATCH" | "ALERT"
+    "china_subscore": None if np.isnan(china_subscore) else round(float(china_subscore), 3),
+    "china_level": china_level               # "OK" | "WATCH" | "ALERT"
+}
+OUT_DIR.joinpath("state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+print("✅ Wrote output/state.json")
