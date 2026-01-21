@@ -38,6 +38,7 @@ series_map = {
     "US HY OAS (bps)": "hy_credit_spread.csv",
     "ECB USD per EUR (monthly)": "eur_usd_ecb.csv",
     "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
+    "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
 }
 
 display_rows = []
@@ -90,6 +91,10 @@ for label, fname in series_map.items():
 composite = np.nan
 if z_values:
     composite = float(np.mean(z_values))
+
+elif "China CLI" in label:
+    # Lower-than-trend CLI -> more risk (negative z should increase risk score)
+    z_values.append(-last_z)
 
 level = "OK"
 if not np.isnan(composite):
