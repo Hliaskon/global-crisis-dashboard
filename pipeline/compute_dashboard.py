@@ -216,7 +216,19 @@ if not np.isnan(composite):
     elif composite >= TH_COMPOSITE_WATCH:
         level = "WATCH"
 
-# Rank contributors by absolute impact
+# Prepare current and previous contribution dicts for Δ
+current_contrib = {lbl: contrib for (lbl, _z, _d, contrib) in contrib_rows}
+
+prev_state_path = OUT_DIR / "prev_state.json"
+prev_contrib = {}
+if prev_state_path.exists():
+    try:
+        prev_state = json.loads(prev_state_path.read_text(encoding="utf-8"))
+        prev_contrib = prev_state.get("contributions", {}) or {}
+    except Exception as e:
+        print(f"⚠️  Could not parse prev_state.json: {e}")
+
+# Rank contributors by absolute *current* impact
 contrib_clean = [(l, z, d, c) for (l, z, d, c) in contrib_rows if not np.isnan(c)]
 abs_sum = sum(abs(c) for (_, _, _, c) in contrib_clean) or 0.0
 contributors_sorted = sorted(contrib_clean, key=lambda t: abs(t[3]), reverse=True)
@@ -288,24 +300,29 @@ if level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
 comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
 
-# ---- Contributors table (sign-adjusted z contributions)
+# ---- Contributors table (with Δ vs prev)
 html.append("<h3>Contributors (sign‑adjusted Z)</h3>")
 html.append("<table><tr>"
-            "<th>Indicator</th><th>Z‑score</th><th>Direction</th><th>Contribution</th><th>Share</th>"
+            "<th>Indicator</th><th>Z‑score</th><th>Direction</th>"
+            "<th>Contribution</th><th>Δ vs prev</th><th>Share</th>"
             "</tr>")
 if contributors_sorted:
     for label, z, d, c in contributors_sorted:
         cls = "pos" if c >= 0 else "neg"
+        prev_c = float(prev_contrib.get(label, 0.0)) if prev_contrib else 0.0
+        delta = c - prev_c
+        cls_d = "pos" if delta >= 0 else "neg"
         share = "-" if abs_sum == 0 else f"{(abs(c)/abs_sum)*100:.0f}%"
         html.append(
             f"<tr><td>{label}</td>"
             f"<td>{z:+.2f}</td>"
             f"<td>{d.replace('_',' ')}</td>"
             f"<td class='{cls}'>{c:+.2f}</td>"
+            f"<td class='{cls_d}'>{delta:+.2f}</td>"
             f"<td>{share}</td></tr>"
         )
 else:
-    html.append("<tr><td colspan='5'>No contributions available.</td></tr>")
+    html.append("<tr><td colspan='6'>No contributions available.</td></tr>")
 html.append("</table>")
 
 # ---- US + ECB table
@@ -352,13 +369,14 @@ html.append("</body></html>")
 OUT_DIR.joinpath("index.html").write_text("\n".join(html), encoding="utf-8")
 print("✅ Wrote output/index.html")
 
-# Persist state for automation (ALERT/WATCH)
+# Persist state for automation (ALERT/WATCH) + contributions (for next Δ)
 state = {
     "generated_utc": now,
     "composite": None if np.isnan(composite) else round(float(composite), 3),
     "composite_level": level,
     "china_subscore": None if np.isnan(china_subscore) else round(float(china_subscore), 3),
-    "china_level": china_level
+    "china_level": china_level,
+    "contributions": {k: round(float(v), 6) for k, v in current_contrib.items()}
 }
 OUT_DIR.joinpath("state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 print("✅ Wrote output/state.json")
