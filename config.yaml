@@ -11,6 +11,10 @@ weights:
   china:
     cli: 0.60                   # OECD China CLI (amplitude adj., SA)
     usdcny: 0.40                # USD/CNY (derived from ECB)
+  japan:
+    cli: 0.60
+    usdjpy: 0.40
+
 
 indicators:
   table_us_ecb:                 # for the "Key Indicators (US + ECB)" section
@@ -21,4 +25,9 @@ indicators:
   china:
     - "OECD China CLI (amplitude adj., SA)"
     - "USD/CNY (derived, ECB monthly)"
-``
+    
+  japan:
+    - "OECD Japan CLI (amplitude adj., SA)"
+    - "USD/JPY (derived, ECB monthly)"
+
+
