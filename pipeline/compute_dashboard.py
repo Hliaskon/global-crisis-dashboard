@@ -174,7 +174,7 @@ series_map = {
     "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
    # NEW — Japan
     "USD/JPY (derived, ECB monthly)": "usd_jpy_ecb.csv",
-    "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv,
+    "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv",
    #europe 
     "OECD Euro Area CLI (amplitude adj., SA)": "euroarea_cli_oecd.csv"
 
