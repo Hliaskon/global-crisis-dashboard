@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          pip install requests pandas numpy
+          pip install requests pandas numpy pyyaml
           echo "---- pip freeze (grep sdmx) ----"
           pip freeze | grep -i sdmx || true
 
