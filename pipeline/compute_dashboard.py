@@ -145,6 +145,99 @@ def spark_from_file(file_name: str, tail_points: int = 52) -> str:
     return sparkline_svg(s.tail(tail_points).tolist())
 
 
+def composite_history_series(series_map: dict, tail_weeks: int = 156, min_count: int = 2) -> pd.Series:
+    """
+    Build a weekly composite time series from sign-adjusted z-scores
+    of all indicators, then take the last `tail_weeks` points.
+    """
+    cols = []
+    for label, fname in series_map.items():
+        path = DATA_DIR / fname
+        if not path.exists():
+            continue
+        s = load_series(path, weekly_resample=True)
+        if s.empty:
+            continue
+        zs = zscore(s)
+        # Use the same direction mapping as the composite
+        _, sign = direction_for_label(label) if 'direction_for_label' in globals() else ("ambiguous", +1)
+        cols.append(sign * zs.rename(label))
+
+    if not cols:
+        return pd.Series(dtype="float64")
+
+    df = pd.concat(cols, axis=1)  # align by date
+    # Row-wise mean with a minimum number of non-NaN contributors
+    counts = df.count(axis=1)
+    m = df.mean(axis=1, skipna=True)
+    m[counts < min_count] = np.nan
+
+    if tail_weeks > 0 and len(m) > tail_weeks:
+        m = m.iloc[-tail_weeks:]
+    return m
+
+
+def composite_chart_svg(series: pd.Series, width: int = 560, height: int = 140) -> str:
+    """
+    Render a larger inline SVG line chart for the composite history,
+    with guides at 0, +1 (WATCH), +2 (ALERT).
+    """
+    if series is None or series.dropna().empty:
+        return "<div class='small'>No composite history available yet.</div>"
+
+    v = series.astype("float64").replace([np.inf, -np.inf], np.nan).dropna()
+    if v.empty or len(v) < 2:
+        return "<div class='small'>Insufficient composite history.</div>"
+
+    # Force the y-scale to include 0, +1, +2 bands
+    lo = min(v.min(), -0.5)
+    hi = max(v.max(), 2.5)
+    span = hi - lo if hi != lo else 1.0
+
+    # Build line
+    x_step = width / (len(v) - 1)
+    pts = []
+    for i, y in enumerate(v):
+        x = i * x_step
+        y_norm = (float(y) - lo) / span
+        y_svg = height - 2 - y_norm * (height - 4)
+        pts.append(f"{x:.1f},{y_svg:.1f}")
+    path = "M " + " L ".join(pts)
+
+    # Helper to position horizontal guide lines at y = 0, +1, +2
+    def y_at(value):
+        y_norm = (float(value) - lo) / span
+        return height - 2 - y_norm * (height - 4)
+
+    y0  = y_at(0.0)
+    y1  = y_at(1.0)
+    y2  = y_at(2.0)
+
+    # Compose SVG
+    svg = []
+    svg.append(f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
+               f"xmlns='http://www.w3.org/2000/svg'>")
+
+    # Background
+    svg.append(f"<rect x='0' y='0' width='{width}' height='{height}' fill='#ffffff'/>")
+
+    # Guides: 0 (grey), +1 (amber), +2 (red)
+    svg.append(f"<line x1='0' y1='{y0:.1f}' x2='{width}' y2='{y0:.1f}' stroke='#bbb' stroke-dasharray='3,3'/>")
+    svg.append(f"<line x1='0' y1='{y1:.1f}' x2='{width}' y2='{y1:.1f}' stroke='#f0b429' stroke-dasharray='4,3'/>")
+    svg.append(f"<line x1='0' y1='{y2:.1f}' x2='{width}' y2='{y2:.1f}' stroke='#d32f2f' stroke-dasharray='5,3'/>")
+
+    # Labels (small, muted)
+    svg.append(f"<text x='{width-2}' y='{y0-4:.1f}' text-anchor='end' font-size='10' fill='#888'>0</text>")
+    svg.append(f"<text x='{width-2}' y='{y1-4:.1f}' text-anchor='end' font-size='10' fill='#f0b429'>+1</text>")
+    svg.append(f"<text x='{width-2}' y='{y2-4:.1f}' text-anchor='end' font-size='10' fill='#d32f2f'>+2</text>")
+
+    # Composite line
+    svg.append(f"<path d='{path}' fill='none' stroke='#1976d2' stroke-width='2'/>")
+
+    svg.append("</svg>")
+    return "".join(svg)
+
+
 def direction_for_label(label: str):
     """Return (direction_name, sign) for contribution mapping."""
     if "Yield Curve" in label:
