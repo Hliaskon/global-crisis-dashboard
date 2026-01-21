@@ -1,0 +1,24 @@
+windows:
+  zscore_lookback_weeks: 260    # ~5 years of weekly points
+
+thresholds:
+  composite_watch: 1.0
+  composite_alert: 2.0
+  china_watch: 1.0
+  china_alert: 2.0
+
+weights:
+  china:
+    cli: 0.60                   # OECD China CLI (amplitude adj., SA)
+    usdcny: 0.40                # USD/CNY (derived from ECB)
+
+indicators:
+  table_us_ecb:                 # for the "Key Indicators (US + ECB)" section
+    - "US Yield Curve 10Y–3M (bps)"
+    - "US Unemployment Rate (%)"
+    - "US HY OAS (bps)"
+    - "ECB USD per EUR (monthly)"
+  china:
+    - "OECD China CLI (amplitude adj., SA)"
+    - "USD/CNY (derived, ECB monthly)"
+``
