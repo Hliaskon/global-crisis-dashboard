@@ -1,6 +1,7 @@
 
 import os
 import json
+import shutil
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -30,10 +31,11 @@ DEFAULTS = {
         "china_alert": 2.0,
     },
     "weights": {
-        "china": {
-            "cli": 0.60,     # OECD China CLI (amplitude adj., SA)
-            "usdcny": 0.40,  # USD/CNY (derived from ECB)
-        }
+        "china":  {"cli": 0.60, "usdcny": 0.40},
+        "japan":  {"cli": 0.60, "usdjpy": 0.40},
+        "eurozone": {"cli": 0.60, "usdeur": 0.40},
+        "uk":     {"cli": 0.60, "usdgbp": 0.40},
+        "canada": {"cli": 0.60, "usdcad": 0.40},
     },
     "indicators": {
         "table_us_ecb": [
@@ -45,6 +47,24 @@ DEFAULTS = {
         "china": [
             "OECD China CLI (amplitude adj., SA)",
             "USD/CNY (derived, ECB monthly)",
+        ],
+        # These sections render only if present in config.yaml.
+        # Defaults here make it easy to enable with no code changes.
+        "japan": [
+            "OECD Japan CLI (amplitude adj., SA)",
+            "USD/JPY (derived, ECB monthly)",
+        ],
+        "eurozone": [
+            "OECD Euro Area CLI (amplitude adj., SA)",
+            "ECB USD per EUR (monthly)",
+        ],
+        "uk": [
+            "OECD UK CLI (amplitude adj., SA)",
+            "USD/GBP (derived, ECB monthly)",
+        ],
+        "canada": [
+            "OECD Canada CLI (amplitude adj., SA)",
+            "USD/CAD (derived, ECB monthly)",
         ],
     },
 }
@@ -58,18 +78,20 @@ if yaml is not None and cfg_path.exists():
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
-        # shallow merge
+        # shallow merge for top-level keys
         for k in DEFAULTS:
             if isinstance(DEFAULTS[k], dict):
                 CFG[k] = {**DEFAULTS[k], **(user_cfg.get(k, {}) or {})}
             else:
                 CFG[k] = user_cfg.get(k, DEFAULTS[k])
-        # nested merges
-        if "weights" in user_cfg and "china" in (user_cfg["weights"] or {}):
-            CFG["weights"]["china"] = {
-                **DEFAULTS["weights"]["china"],
-                **(user_cfg["weights"]["china"] or {}),
-            }
+        # nested sub-dicts
+        if "weights" in user_cfg:
+            for bucket in DEFAULTS["weights"].keys():
+                if bucket in user_cfg["weights"] or bucket in CFG["weights"]:
+                    CFG["weights"][bucket] = {
+                        **DEFAULTS["weights"].get(bucket, {}),
+                        **(user_cfg["weights"].get(bucket, {}) if user_cfg["weights"] else {}),
+                    }
         if "indicators" in user_cfg:
             for sec, lst in (user_cfg["indicators"] or {}).items():
                 if isinstance(lst, list) and lst:
@@ -82,7 +104,9 @@ TH_COMPOSITE_WATCH = float(CFG["thresholds"]["composite_watch"])
 TH_COMPOSITE_ALERT = float(CFG["thresholds"]["composite_alert"])
 TH_CHINA_WATCH = float(CFG["thresholds"]["china_watch"])
 TH_CHINA_ALERT = float(CFG["thresholds"]["china_alert"])
-W_CHINA_CLI = float(CFG["weights"]["china"]["cli"])
+
+# convenience weights
+W_CHINA_CLI    = float(CFG["weights"]["china"]["cli"])
 W_CHINA_USDCNY = float(CFG["weights"]["china"]["usdcny"])
 
 # -------------------------------
@@ -145,6 +169,23 @@ def spark_from_file(file_name: str, tail_points: int = 52) -> str:
     return sparkline_svg(s.tail(tail_points).tolist())
 
 
+def direction_for_label(label: str):
+    """Return (direction_name, sign) for contribution mapping."""
+    if "Yield Curve" in label:
+        return "negative_is_risky", -1
+    if "HY OAS" in label:
+        return "positive_is_risky", +1
+    if "Unemployment" in label:
+        return "positive_is_risky", +1
+    if "USD per EUR" in label:
+        return "positive_is_risky", +1
+    if ("USD/CNY" in label) or ("USD/JPY" in label) or ("USD/GBP" in label) or ("USD/CAD" in label):
+        return "positive_is_risky", +1
+    if any(k in label for k in ["China CLI", "Japan CLI", "Euro Area CLI", "UK CLI", "Canada CLI"]):
+        return "negative_is_risky", -1
+    return "ambiguous", +1  # fallback
+
+
 def composite_history_series(series_map: dict, tail_weeks: int = 156, min_count: int = 2) -> pd.Series:
     """
     Build a weekly composite time series from sign-adjusted z-scores
@@ -159,15 +200,13 @@ def composite_history_series(series_map: dict, tail_weeks: int = 156, min_count:
         if s.empty:
             continue
         zs = zscore(s)
-        # Use the same direction mapping as the composite
-        _, sign = direction_for_label(label) if 'direction_for_label' in globals() else ("ambiguous", +1)
+        _, sign = direction_for_label(label)
         cols.append(sign * zs.rename(label))
 
     if not cols:
         return pd.Series(dtype="float64")
 
     df = pd.concat(cols, axis=1)  # align by date
-    # Row-wise mean with a minimum number of non-NaN contributors
     counts = df.count(axis=1)
     m = df.mean(axis=1, skipna=True)
     m[counts < min_count] = np.nan
@@ -177,10 +216,10 @@ def composite_history_series(series_map: dict, tail_weeks: int = 156, min_count:
     return m
 
 
-def composite_chart_svg(series: pd.Series, width: int = 560, height: int = 140) -> str:
+def composite_chart_svg(series: pd.Series, smooth: pd.Series = None, width: int = 560, height: int = 140) -> str:
     """
     Render a larger inline SVG line chart for the composite history,
-    with guides at 0, +1 (WATCH), +2 (ALERT).
+    with guides at 0, +1 (WATCH), +2 (ALERT) and an optional smoothing overlay.
     """
     if series is None or series.dropna().empty:
         return "<div class='small'>No composite history available yet.</div>"
@@ -189,88 +228,99 @@ def composite_chart_svg(series: pd.Series, width: int = 560, height: int = 140) 
     if v.empty or len(v) < 2:
         return "<div class='small'>Insufficient composite history.</div>"
 
-    # Force the y-scale to include 0, +1, +2 bands
+    # Ensure we include the WATCH/ALERT bands in the scale
     lo = min(v.min(), -0.5)
     hi = max(v.max(), 2.5)
     span = hi - lo if hi != lo else 1.0
-
-    # Build line
     x_step = width / (len(v) - 1)
+
+    # main line
     pts = []
     for i, y in enumerate(v):
         x = i * x_step
         y_norm = (float(y) - lo) / span
         y_svg = height - 2 - y_norm * (height - 4)
         pts.append(f"{x:.1f},{y_svg:.1f}")
-    path = "M " + " L ".join(pts)
+    main_path = "M " + " L ".join(pts)
 
-    # Helper to position horizontal guide lines at y = 0, +1, +2
-    def y_at(value):
-        y_norm = (float(value) - lo) / span
+    # smoothing overlay aligned to v index
+    smooth_path = ""
+    if smooth is not None:
+        s_aligned = smooth.reindex(v.index).astype("float64").replace([np.inf, -np.inf], np.nan)
+        pts_s = []
+        for i, y in enumerate(s_aligned):
+            if pd.isna(y):
+                pts_s.append(None)
+                continue
+            x = i * x_step
+            y_norm = (float(y) - lo) / span
+            y_svg = height - 2 - y_norm * (height - 4)
+            pts_s.append(f"{x:.1f},{y_svg:.1f}")
+        # break into chunks on NaN
+        chunks, chunk = [], []
+        for p in pts_s:
+            if p is None:
+                if chunk:
+                    chunks.append("M " + " L ".join(chunk))
+                    chunk = []
+            else:
+                chunk.append(p)
+        if chunk:
+            chunks.append("M " + " L ".join(chunk))
+        smooth_path = "".join(
+            [f"<path d='{ch}' fill='none' stroke='#8e24aa' stroke-width='2' opacity='0.9'/>" for ch in chunks]
+        )
+
+    def y_at(val):
+        y_norm = (float(val) - lo) / span
         return height - 2 - y_norm * (height - 4)
 
-    y0  = y_at(0.0)
-    y1  = y_at(1.0)
-    y2  = y_at(2.0)
+    y0, y1, y2 = y_at(0.0), y_at(1.0), y_at(2.0)
 
-    # Compose SVG
     svg = []
-    svg.append(f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
-               f"xmlns='http://www.w3.org/2000/svg'>")
-
-    # Background
+    svg.append(f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg'>")
     svg.append(f"<rect x='0' y='0' width='{width}' height='{height}' fill='#ffffff'/>")
-
-    # Guides: 0 (grey), +1 (amber), +2 (red)
+    # Guides
     svg.append(f"<line x1='0' y1='{y0:.1f}' x2='{width}' y2='{y0:.1f}' stroke='#bbb' stroke-dasharray='3,3'/>")
     svg.append(f"<line x1='0' y1='{y1:.1f}' x2='{width}' y2='{y1:.1f}' stroke='#f0b429' stroke-dasharray='4,3'/>")
     svg.append(f"<line x1='0' y1='{y2:.1f}' x2='{width}' y2='{y2:.1f}' stroke='#d32f2f' stroke-dasharray='5,3'/>")
-
-    # Labels (small, muted)
+    # Labels
     svg.append(f"<text x='{width-2}' y='{y0-4:.1f}' text-anchor='end' font-size='10' fill='#888'>0</text>")
     svg.append(f"<text x='{width-2}' y='{y1-4:.1f}' text-anchor='end' font-size='10' fill='#f0b429'>+1</text>")
     svg.append(f"<text x='{width-2}' y='{y2-4:.1f}' text-anchor='end' font-size='10' fill='#d32f2f'>+2</text>")
-
-    # Composite line
-    svg.append(f"<path d='{path}' fill='none' stroke='#1976d2' stroke-width='2'/>")
-
+    # main line
+    svg.append(f"<path d='{main_path}' fill='none' stroke='#1976d2' stroke-width='2'/>")
+    # overlay
+    if smooth_path:
+        svg.append(smooth_path)
+        svg.append("<text x='4' y='12' font-size='10' fill='#1976d2'>Composite</text>")
+        svg.append("<text x='4' y='24' font-size='10' fill='#8e24aa'>3‑month MA</text>")
     svg.append("</svg>")
     return "".join(svg)
-
-
-def direction_for_label(label: str):
-    """Return (direction_name, sign) for contribution mapping."""
-    if "Yield Curve" in label:
-        return "negative_is_risky", -1
-    if "HY OAS" in label:
-        return "positive_is_risky", +1
-    if "Unemployment" in label:
-        return "positive_is_risky", +1
-    if "USD per EUR" in label:
-        return "positive_is_risky", +1
-    if "USD/CNY" in label:
-        return "positive_is_risky", +1
-    if "China CLI" in label:
-        return "negative_is_risky", -1
-    return "ambiguous", +1  # fallback
 
 
 # -------------------------------
 # Indicator map (file names)
 # -------------------------------
 series_map = {
+    # US + ECB core
     "US Yield Curve 10Y–3M (bps)": "yield_curve_10y_3m.csv",
     "US Unemployment Rate (%)": "unemployment_rate.csv",
     "US HY OAS (bps)": "hy_credit_spread.csv",
     "ECB USD per EUR (monthly)": "eur_usd_ecb.csv",
-    "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
-    "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
-   # NEW — Japan
-    "USD/JPY (derived, ECB monthly)": "usd_jpy_ecb.csv",
-    "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv",
-   #europe 
-    "OECD Euro Area CLI (amplitude adj., SA)": "euroarea_cli_oecd.csv"
 
+    # FX crosses derived from ECB
+    "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
+    "USD/JPY (derived, ECB monthly)": "usd_jpy_ecb.csv",
+    "USD/GBP (derived, ECB monthly)": "usd_gbp_ecb.csv",
+    "USD/CAD (derived, ECB monthly)": "usd_cad_ecb.csv",
+
+    # OECD CLIs
+    "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
+    "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv",
+    "OECD Euro Area CLI (amplitude adj., SA)": "euroarea_cli_oecd.csv",
+    "OECD UK CLI (amplitude adj., SA)": "uk_cli_oecd.csv",
+    "OECD Canada CLI (amplitude adj., SA)": "canada_cli_oecd.csv",
 }
 
 # -------------------------------
@@ -296,9 +346,7 @@ for label, fname in series_map.items():
     last_val = s.iloc[-1]
     last_z = zs.iloc[-1] if not np.isnan(zs.iloc[-1]) else np.nan
 
-    display_rows.append(
-        (label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}")
-    )
+    display_rows.append((label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}"))
 
     if not np.isnan(last_z):
         dir_name, sign = direction_for_label(label)
@@ -372,6 +420,14 @@ if not np.isnan(china_subscore):
 # Render HTML
 # -------------------------------
 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+# Copy source CSVs to the published site so Download links work
+(OUT_DIR / "data").mkdir(exist_ok=True)
+for fn in set(series_map.values()):
+    src = DATA_DIR / fn
+    if src.exists():
+        shutil.copyfile(src, OUT_DIR / "data" / fn)
+
 html = []
 html.append("<html><head><meta charset='utf-8'>")
 html.append("<title>Global Crisis Early Warning – Prototype</title>")
@@ -387,6 +443,8 @@ th{background:#f4f6f8;}
 .small{color:#666;font-size:12px}
 td svg{display:block}
 svg { margin-top: 6px; }
+a{ color:#1565c0; text-decoration:none; }
+a:hover{ text-decoration:underline; }
 </style>
 """)
 html.append("</head><body>")
@@ -400,12 +458,17 @@ if level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
 comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
 
-
-# --- Composite history (3y) ---
+# --- Composite history (3y) + 3-month MA and CSV download
 comp_hist = composite_history_series(series_map, tail_weeks=156, min_count=2)
+comp_ma = comp_hist.rolling(13, min_periods=4).mean()  # ~3 months (13 weeks)
 html.append("<h3>Composite history (3y)</h3>")
-html.append(composite_chart_svg(comp_hist, width=560, height=140))
+html.append(composite_chart_svg(comp_hist, comp_ma, width=560, height=140))
 
+# Export composite history CSV (date, composite, composite_ma_13w)
+comp_df = pd.DataFrame({"date": comp_hist.index, "composite": comp_hist.values})
+comp_df["composite_ma_13w"] = comp_ma.reindex(comp_hist.index).values
+comp_df.to_csv(OUT_DIR / "composite_history.csv", index=False)
+html.append("<p class='small'><a href='composite_history.csv' download>Download composite history (CSV)</a></p>")
 
 # ---- Contributors table (with Δ vs prev)
 html.append("<h3>Contributors (sign‑adjusted Z)</h3>")
@@ -432,154 +495,119 @@ else:
     html.append("<tr><td colspan='6'>No contributions available.</td></tr>")
 html.append("</table>")
 
-# ---- US + ECB table
+# ---- US + ECB table (with Download)
 us_ecb_labels = CFG["indicators"]["table_us_ecb"]
 html.append("<h3>Key Indicators (US + ECB)</h3>")
-html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th></tr>")
+html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th><th>Download</th></tr>")
 for r in display_rows:
     if r[0] in us_ecb_labels:
-        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>")
+        fn = series_map[r[0]]
+        link = f"<a href='data/{fn}' download>CSV</a>"
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{link}</td></tr>")
 html.append("</table>")
 
-# ---- China block with subscore + sparklines
-china_labels = CFG["indicators"]["china"]
-html.append("<h3>China</h3>")
-badge_cn = "<span class='badge ok'>OK</span>"
-if china_level == "WATCH": badge_cn = "<span class='badge watch'>WATCH</span>"
-if china_level == "ALERT": badge_cn = "<span class='badge alert'>ALERT</span>"
-cn_str = "-" if np.isnan(china_subscore) else f"{china_subscore:.2f}"
-html.append(f"<p><b>China Subscore:</b> {cn_str} {badge_cn}</p>")
+def render_block(block_name: str, title: str, items_labels: list):
+    html.append(f"<h3>{title}</h3>")
+    # Build a subscore if we have weights in config
+    weights = CFG["weights"].get(block_name, {})
+    scoring = []
+    # Build a deterministic list [(label, direction, weight)]
+    bundle = []
+    if block_name == "china":
+        bundle = [
+            ("OECD China CLI (amplitude adj., SA)", "negative_is_risky", float(weights.get("cli", 0.60))),
+            ("USD/CNY (derived, ECB monthly)", "positive_is_risky", float(weights.get("usdcny", 0.40))),
+        ]
+    elif block_name == "japan":
+        bundle = [
+            ("OECD Japan CLI (amplitude adj., SA)", "negative_is_risky", float(weights.get("cli", 0.60))),
+            ("USD/JPY (derived, ECB monthly)", "positive_is_risky", float(weights.get("usdjpy", 0.40))),
+        ]
+    elif block_name == "eurozone":
+        bundle = [
+            ("OECD Euro Area CLI (amplitude adj., SA)", "negative_is_risky", float(weights.get("cli", 0.60))),
+            ("ECB USD per EUR (monthly)", "positive_is_risky", float(weights.get("usdeur", 0.40))),
+        ]
+    elif block_name == "uk":
+        bundle = [
+            ("OECD UK CLI (amplitude adj., SA)", "negative_is_risky", float(weights.get("cli", 0.60))),
+            ("USD/GBP (derived, ECB monthly)", "positive_is_risky", float(weights.get("usdgbp", 0.40))),
+        ]
+    elif block_name == "canada":
+        bundle = [
+            ("OECD Canada CLI (amplitude adj., SA)", "negative_is_risky", float(weights.get("cli", 0.60))),
+            ("USD/CAD (derived, ECB monthly)", "positive_is_risky", float(weights.get("usdcad", 0.40))),
+        ]
 
-html.append("<table><tr>"
-            "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
-            "<th>Z-Score</th><th>Sparkline (52w)</th>"
-            "</tr>")
-for label in china_labels:
-    rows = [r for r in display_rows if r[0] == label]
-    if not rows:
-        continue
-    r = rows[0]
-    svg = spark_from_file(series_map[label], tail_points=52)
-    html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
-html.append("</table>")
+    for lbl, direction, w in bundle:
+        if lbl not in series_map:
+            continue
+        path = DATA_DIR / series_map[lbl]
+        if not path.exists():
+            continue
+        s = load_series(path, weekly_resample=True)
+        if s.empty:
+            continue
+        zs = zscore(s)
+        z_last = zs.iloc[-1] if len(zs) else np.nan
+        if np.isnan(z_last):
+            continue
+        score = -float(z_last) if direction == "negative_is_risky" else float(z_last)
+        scoring.append((score, w))
 
+    sub = np.nan
+    if scoring:
+        tw = sum(w for _, w in scoring)
+        if tw > 0:
+            sub = sum(sc * w for sc, w in scoring) / tw
 
-# ---- Japan block with subscore + sparklines ----
+    level = "OK"
+    if not np.isnan(sub):
+        if sub >= TH_CHINA_ALERT:
+            level = "ALERT"
+        elif sub >= TH_CHINA_WATCH:
+            level = "WATCH"
+
+    badge = "<span class='badge ok'>OK</span>"
+    if level == "WATCH": badge = "<span class='badge watch'>WATCH</span>"
+    if level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
+    sub_str = "-" if np.isnan(sub) else f"{sub:.2f}"
+    html.append(f"<p><b>{title} Subscore:</b> {sub_str} {badge}</p>")
+
+    # Table with sparkline + download
+    html.append("<table><tr>"
+                "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
+                "<th>Z-Score</th><th>Sparkline (52w)</th><th>Download</th>"
+                "</tr>")
+    for lbl in items_labels:
+        rows = [r for r in display_rows if r[0] == lbl]
+        if not rows:
+            continue
+        r = rows[0]
+        svg = spark_from_file(series_map[lbl], tail_points=52)
+        fn = series_map[lbl]
+        link = f"<a href='data/{fn}' download>CSV</a>"
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td><td>{link}</td></tr>")
+    html.append("</table>")
+
+# ---- China / Japan / Eurozone / UK / Canada blocks (render only if present in config)
+if "china" in CFG["indicators"]:
+    render_block("china", "China", CFG["indicators"]["china"])
 if "japan" in CFG["indicators"]:
-    jp_labels = CFG["indicators"]["japan"]
-    # Compute Japan subscore from config weights (default 60/40)
-    jp_items = [
-        ("OECD Japan CLI (amplitude adj., SA)", "negative_is_risky", float(CFG["weights"]["japan"]["cli"])),
-        ("USD/JPY (derived, ECB monthly)", "positive_is_risky", float(CFG["weights"]["japan"]["usdjpy"])),
-    ]
-    jp_scores = []
-    for lbl, direction, w in jp_items:
-        path = DATA_DIR / series_map[lbl]
-        if not path.exists():
-            continue
-        s = load_series(path, weekly_resample=True)
-        if s.empty:
-            continue
-        zs = zscore(s)
-        z_last = zs.iloc[-1] if len(zs) else np.nan
-        if np.isnan(z_last):
-            continue
-        score = -float(z_last) if direction == "negative_is_risky" else float(z_last)
-        jp_scores.append((score, w))
-    jp_sub = np.nan
-    if jp_scores:
-        tw = sum(w for _, w in jp_scores)
-        if tw > 0:
-            jp_sub = sum(sc*w for sc, w in jp_scores) / tw
-    jp_level = "OK"
-    if not np.isnan(jp_sub):
-        if jp_sub >= TH_CHINA_ALERT:  # reuse thresholds
-            jp_level = "ALERT"
-        elif jp_sub >= TH_CHINA_WATCH:
-            jp_level = "WATCH"
-
-    html.append("<h3>Japan</h3>")
-    badge_jp = "<span class='badge ok'>OK</span>"
-    if jp_level == "WATCH": badge_jp = "<span class='badge watch'>WATCH</span>"
-    if jp_level == "ALERT": badge_jp = "<span class='badge alert'>ALERT</span>"
-    jp_str = "-" if np.isnan(jp_sub) else f"{jp_sub:.2f}"
-    html.append(f"<p><b>Japan Subscore:</b> {jp_str} {badge_jp}</p>")
-
-    html.append("<table><tr>"
-                "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
-                "<th>Z-Score</th><th>Sparkline (52w)</th>"
-                "</tr>")
-    for lbl in jp_labels:
-        rows = [r for r in display_rows if r[0] == lbl]
-        if not rows:
-            continue
-        r = rows[0]
-        svg = spark_from_file(series_map[lbl], tail_points=52)
-        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
-    html.append("</table>")
-
-
-# ---- Eurozone block with subscore + sparklines ----
+    render_block("japan", "Japan", CFG["indicators"]["japan"])
 if "eurozone" in CFG["indicators"]:
-    ez_labels = CFG["indicators"]["eurozone"]
-    ez_items = [
-        ("OECD Euro Area CLI (amplitude adj., SA)", "negative_is_risky", float(CFG["weights"]["eurozone"]["cli"])),
-        ("ECB USD per EUR (monthly)", "positive_is_risky", float(CFG["weights"]["eurozone"]["usdeur"])),
-    ]
-    ez_scores = []
-    for lbl, direction, w in ez_items:
-        path = DATA_DIR / series_map[lbl]
-        if not path.exists():
-            continue
-        s = load_series(path, weekly_resample=True)
-        if s.empty:
-            continue
-        zs = zscore(s)
-        z_last = zs.iloc[-1] if len(zs) else np.nan
-        if np.isnan(z_last):
-            continue
-        score = -float(z_last) if direction == "negative_is_risky" else float(z_last)
-        ez_scores.append((score, w))
-
-    ez_sub = np.nan
-    if ez_scores:
-        tw = sum(w for _, w in ez_scores)
-        if tw > 0:
-            ez_sub = sum(sc*w for sc, w in ez_scores) / tw
-
-    ez_level = "OK"
-    if not np.isnan(ez_sub):
-        if ez_sub >= TH_CHINA_ALERT:   # reuse thresholds (watch/alert)
-            ez_level = "ALERT"
-        elif ez_sub >= TH_CHINA_WATCH:
-            ez_level = "WATCH"
-
-    html.append("<h3>Eurozone</h3>")
-    badge_ez = "<span class='badge ok'>OK</span>"
-    if ez_level == "WATCH": badge_ez = "<span class='badge watch'>WATCH</span>"
-    if ez_level == "ALERT": badge_ez = "<span class='badge alert'>ALERT</span>"
-    ez_str = "-" if np.isnan(ez_sub) else f"{ez_sub:.2f}"
-    html.append(f"<p><b>Eurozone Subscore:</b> {ez_str} {badge_ez}</p>")
-
-    html.append("<table><tr>"
-                "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
-                "<th>Z-Score</th><th>Sparkline (52w)</th>"
-                "</tr>")
-    for lbl in ez_labels:
-        rows = [r for r in display_rows if r[0] == lbl]
-        if not rows:
-            continue
-        r = rows[0]
-        svg = spark_from_file(series_map[lbl], tail_points=52)
-        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
-    html.append("</table>")
-
+    render_block("eurozone", "Eurozone", CFG["indicators"]["eurozone"])
+if "uk" in CFG["indicators"]:
+    render_block("uk", "United Kingdom", CFG["indicators"]["uk"])
+if "canada" in CFG["indicators"]:
+    render_block("canada", "Canada", CFG["indicators"]["canada"])
 
 html.append(
     "<p class='small'>Notes: Contributions use the same direction rules as the composite: "
     "curve inversion (more negative) = risk↑; HY OAS ↑ = risk↑; unemployment ↑ = risk↑; "
-    "USD per EUR ↑ = risk↑; USD/CNY ↑ = risk↑; China CLI below trend = risk↑. "
-    "Edit <code>config.yaml</code> to adjust thresholds, lookback, and weights.</p>"
+    "USD per EUR ↑ = risk↑; USD crosses (USD/CNY, USD/JPY, USD/GBP, USD/CAD) ↑ = risk↑; "
+    "OECD CLIs (amplitude‑adjusted) below trend = risk↑. "
+    "Edit <code>config.yaml</code> to adjust thresholds, lookback, indicators and weights.</p>"
 )
 
 html.append("</body></html>")
@@ -599,3 +627,4 @@ state = {
 }
 OUT_DIR.joinpath("state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 print("✅ Wrote output/state.json")
+
