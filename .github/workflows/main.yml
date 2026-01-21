@@ -4,7 +4,7 @@ name: Crisis Dashboard Automation
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * 1-5'
+    - cron: '0 6 * * 1-5'   # Weekdays 06:00 UTC
 
 permissions:
   contents: read
@@ -64,21 +64,29 @@ jobs:
           echo "---- Show ingestors/ecb_sdmx.py ----"
           sed -n '1,200p' ingestors/ecb_sdmx.py || true
           echo "---- Show pipeline/update_ecb_data.py ----"
-          sed -n '1,200p' pipeline/update_ecb_data.py || true
+          sed -n '1,220p' pipeline/update_ecb_data.py || true
 
-      
+      # Robust preflight: compile only files that exist
       - name: Compile Python pipeline scripts (preflight)
         run: |
           set -euxo pipefail
-          python -m py_compile \
-            pipeline/update_ecb_data.py \
-            pipeline/update_oecd_cli.py \
-            pipeline/update_oecd_cli_japan.py \
-            pipeline/update_oecd_cli_ea.py \
-            pipeline/update_oecd_cli_uk.py \
-            pipeline/update_oecd_cli_canada.py \
+          FILES="
+            pipeline/update_ecb_data.py
+            pipeline/update_oecd_cli.py
+            pipeline/update_oecd_cli_japan.py
+            pipeline/update_oecd_cli_ea.py
+            pipeline/update_oecd_cli_uk.py
+            pipeline/update_oecd_cli_canada.py
             pipeline/compute_dashboard.py
-    
+          "
+          for f in $FILES; do
+            if [ -f "$f" ]; then
+              echo "Compiling: $f"
+              python -m py_compile "$f"
+            else
+              echo "Skipping missing: $f"
+            fi
+          done
 
       - name: Download FRED data
         env:
@@ -94,27 +102,12 @@ jobs:
             head -n 5 "$f" || true
           done
 
-
-
-      - name: Compile Python pipeline scripts (preflight)
-        run: |
-          set -euxo pipefail
-          python -m py_compile \
-            pipeline/update_ecb_data.py \
-            pipeline/update_oecd_cli.py \
-            pipeline/update_oecd_cli_japan.py \
-            pipeline/update_oecd_cli_ea.py \
-            pipeline/compute_dashboard.py
-
-
       - name: Download ECB EXR data (pipeline script)
         run: |
           set -euxo pipefail
           python pipeline/update_ecb_data.py
-          echo "---- Show first 5 lines of ECB CSV ----"
+          echo "---- Show first 5 lines of ECB USD/EUR CSV ----"
           head -n 5 data/eur_usd_ecb.csv || true
-
-
 
       - name: Download OECD China CLI (MEI_CLI LOLITOAA.CHN.M)
         run: |
@@ -123,7 +116,6 @@ jobs:
           echo "---- Show first 5 lines of OECD China CLI CSV ----"
           head -n 5 data/china_cli_oecd.csv || true
 
-      # --- 23A: Add Japan CLI from OECD (LOLITOAA.JPN.M) ---
       - name: Download OECD Japan CLI (MEI_CLI LOLITOAA.JPN.M)
         run: |
           set -e
@@ -131,7 +123,6 @@ jobs:
           echo "---- Show first 5 lines of OECD Japan CLI CSV ----"
           head -n 5 data/japan_cli_oecd.csv || true
 
-      # --- 23B: Add Euro Area CLI from OECD (LOLITOAA.EA19.M) ---
       - name: Download OECD Euro Area CLI (MEI_CLI LOLITOAA.EA19.M)
         run: |
           set -e
@@ -139,7 +130,6 @@ jobs:
           echo "---- Show first 5 lines of OECD EA CLI CSV ----"
           head -n 5 data/euroarea_cli_oecd.csv || true
 
-      
       - name: Download OECD UK CLI (MEI_CLI LOLITOAA.GBR.M)
         run: |
           set -e
@@ -154,14 +144,11 @@ jobs:
           echo "---- Show first 5 lines of OECD Canada CLI CSV ----"
           head -n 5 data/canada_cli_oecd.csv || true
 
-          
-
       - name: Fetch previous state.json (if exists)
         run: |
           set -euxo pipefail
           mkdir -p output
           BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}"
-          # Try to download the live state.json from last deploy
           curl -fsSL "$BASE/state.json" -o output/prev_state.json || echo "No previous state found."
           [ -f output/prev_state.json ] && echo "---- prev_state.json (head) ----" && head -n 20 output/prev_state.json || true
 
@@ -173,6 +160,8 @@ jobs:
           ls -l output || true
           echo "---- Preview top of index.html ----"
           head -n 40 output/index.html || true
+          echo "---- Preview top of composite_history.csv ----"
+          head -n 5 output/composite_history.csv || true
 
       - name: Upload dashboard state JSON
         uses: actions/upload-artifact@v4
@@ -184,7 +173,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs'); // github-script provides 'core' and 'github' already
+            const fs = require('fs'); // 'core' and 'github' are injected by github-script
 
             function readJSON(p) {
               try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
@@ -215,7 +204,7 @@ jobs:
                   description: 'Auto-created label for Crisis Dashboard ALERTs'
                 });
                 core.info('Created label: alert');
-              } catch (e2) { core.warning('Could not create label "alert": ' + String(e2)); }
+              } catch (e2) { core.warning('Could not create label \"alert\": ' + String(e2)); }
             }
 
             const generated = cur.generated_utc || '-';
@@ -274,7 +263,7 @@ jobs:
           name: dashboard-html
           path: output/index.html
 
-      # Summarize the run so you always see the live URL & files in the Summary tab
+      # Run Summary: always shows live URL & lists of output/data
       - name: Write run summary (Pages URL & artifacts)
         run: |
           set -e
@@ -288,7 +277,7 @@ jobs:
             ls -l output || true
             echo ""
             echo "### Data"
-            ls -l data | head -n 40 || true
+            ls -l data | head -n 80 || true
           } >> $GITHUB_STEP_SUMMARY
 
       # Configure Pages before uploading site artifact
