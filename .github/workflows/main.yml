@@ -118,6 +118,65 @@ jobs:
           python pipeline/update_oecd_cli.py RUS russia_cli_oecd.csv
           head -n 5 data/russia_cli_oecd.csv || true
 
+        
+      - name: Download Brent (FRED)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_brent_fred.py
+          head -n 5 data/brent_spot_fred.csv || true
+      
+      - name: Download S&P 500 (FRED)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_sp500_fred.py
+          head -n 5 data/sp500_fred.csv || true
+      
+      # Gold (choose one path):
+      # If licensed LBMA:
+      # - name: Download Gold (LBMA licensed)
+      #   run: python pipeline/update_gold_lbma.py
+      #   # head -n 5 data/gold_lbma_usd.csv
+      # Else: disable until you select a source
+      
+      - name: Download BIS policy rates
+        run: |
+          set -euxo pipefail
+          python pipeline/update_policy_rate_bis.py US policy_us.csv
+          python pipeline/update_policy_rate_bis.py DE policy_de.csv
+          python pipeline/update_policy_rate_bis.py FR policy_fr.csv
+          python pipeline/update_policy_rate_bis.py IT policy_it.csv
+          python pipeline/update_policy_rate_bis.py GB policy_gb.csv
+          python pipeline/update_policy_rate_bis.py CA policy_ca.csv
+          python pipeline/update_policy_rate_bis.py JP policy_jp.csv
+          python pipeline/update_policy_rate_bis.py IN policy_in.csv
+          python pipeline/update_policy_rate_bis.py RU policy_ru.csv
+      
+      - name: Download OECD 10Y yields
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_yields.py US yield10_us.csv
+          python pipeline/update_oecd_yields.py DE yield10_de.csv
+          python pipeline/update_oecd_yields.py FR yield10_fr.csv
+          python pipeline/update_oecd_yields.py IT yield10_it.csv
+          python pipeline/update_oecd_yields.py GB yield10_gb.csv
+          python pipeline/update_oecd_yields.py JP yield10_jp.csv
+          python pipeline/update_oecd_yields.py CA yield10_ca.csv
+      
+      - name: Download OECD Industrial Production
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_ip.py DE ip_de.csv
+          python pipeline/update_oecd_ip.py FR ip_fr.csv
+          python pipeline/update_oecd_ip.py IT ip_it.csv
+          python pipeline/update_oecd_ip.py US ip_us.csv
+          python pipeline/update_oecd_ip.py JP ip_jp.csv
+      
+      # Optional:
+      # - name: Download BIS Debt Service Ratio (households)
+      #   run: |
+      #     python pipeline/update_bis_dsr.py DE dsr_hh_de.csv
+      #     ...      
+
       - name: Fetch previous state.json (if exists on Pages)
         run: |
           set -euxo pipefail
