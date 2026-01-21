@@ -1,53 +1,70 @@
 windows:
-  zscore_lookback_weeks: 260    # ~5 years of weekly points
+  zscore_lookback_weeks: 260   # ~5 years of weekly points
 
 thresholds:
   composite_watch: 1.0
   composite_alert: 2.0
-  china_watch: 1.0
-  china_alert: 2.0
+  country_watch: 1.0
+  country_alert: 2.0
 
+# Default weights per country (CLI vs FX)
 weights:
-  china:
-    cli: 0.60                   # OECD China CLI (amplitude adj., SA)
-    usdcny: 0.40                # USD/CNY (derived from ECB)
-  japan:
+  default:
     cli: 0.60
-    usdjpy: 0.40
-    
-  eurozone:
-    cli: 0.60          # OECD Euro Area CLI
-    usdeur: 0.40       # USD per EUR (ECB)  
-  uk:
-    cli: 0.60
-    usdgbp: 0.40
-  canada:
-    cli: 0.60
-    usdcad: 0.40
-  
+    fx: 0.40
+
+# What to show in the main "US + ECB" table
 indicators:
-  table_us_ecb:                 # for the "Key Indicators (US + ECB)" section
+  table_us_ecb:
     - "US Yield Curve 10Y–3M (bps)"
     - "US Unemployment Rate (%)"
     - "US HY OAS (bps)"
-    - "ECB USD per EUR (monthly)"
-  china:
-    - "OECD China CLI (amplitude adj., SA)"
-    - "USD/CNY (derived, ECB monthly)"
-    
-  japan:
-    - "OECD Japan CLI (amplitude adj., SA)"
-    - "USD/JPY (derived, ECB monthly)"
-   
-  eurozone:
-    - "OECD Euro Area CLI (amplitude adj., SA)"
-    - "ECB USD per EUR (monthly)"  
-  uk:
-    - "OECD UK CLI (amplitude adj., SA)"
-    - "USD/GBP (derived, ECB monthly)"
-  canada:
-    - "OECD Canada CLI (amplitude adj., SA)"
-    - "USD/CAD (derived, ECB monthly)"
-  
- 
+    - "USD per EUR (ECB)"
 
+# Countries (each has CLI + an FX)
+countries:
+  - name: China
+    oecd_loc: CHN
+    cli_label: "OECD China CLI (amplitude adj., SA)"
+    fx_label:  "USD/CNY (derived, ECB)"
+    fx_source: usd_cny_ecb.csv
+  - name: Japan
+    oecd_loc: JPN
+    cli_label: "OECD Japan CLI (amplitude adj., SA)"
+    fx_label:  "USD/JPY (derived, ECB)"
+    fx_source: usd_jpy_ecb.csv
+  - name: Germany
+    oecd_loc: DEU
+    cli_label: "OECD Germany CLI (amplitude adj., SA)"
+    fx_label:  "USD per EUR (ECB)"          # Germany uses EUR
+    fx_source: eur_usd_ecb.csv
+  - name: France
+    oecd_loc: FRA
+    cli_label: "OECD France CLI (amplitude adj., SA)"
+    fx_label:  "USD per EUR (ECB)"          # France uses EUR
+    fx_source: eur_usd_ecb.csv
+  - name: Italy
+    oecd_loc: ITA
+    cli_label: "OECD Italy CLI (amplitude adj., SA)"
+    fx_label:  "USD per EUR (ECB)"          # Italy uses EUR
+    fx_source: eur_usd_ecb.csv
+  - name: United Kingdom
+    oecd_loc: GBR
+    cli_label: "OECD UK CLI (amplitude adj., SA)"
+    fx_label:  "USD/GBP (derived, ECB)"
+    fx_source: usd_gbp_ecb.csv
+  - name: Canada
+    oecd_loc: CAN
+    cli_label: "OECD Canada CLI (amplitude adj., SA)"
+    fx_label:  "USD/CAD (derived, ECB)"
+    fx_source: usd_cad_ecb.csv
+  - name: India
+    oecd_loc: IND
+    cli_label: "OECD India CLI (amplitude adj., SA)"
+    fx_label:  "USD/INR (derived, ECB)"
+    fx_source: usd_inr_ecb.csv
+  - name: Russia
+    oecd_loc: RUS
+    cli_label: "OECD Russia CLI (amplitude adj., SA)"
+    fx_label:  "USD/RUB (derived, ECB)"
+    fx_source: usd_rub_ecb.csv
