@@ -1,5 +1,8 @@
+
 # pipeline/compute_dashboard.py
-# Step 1 – visual/layout improvements only (CSS tweaks, country cards, section separators, nicer missing-FX rows)
+# Step 1 + Step 2 presentation improvements:
+# - CSS tweaks, section separators, "country cards", right-aligned numerics, dim missing rows
+# - Composite "hero" block and friendly direction wording in Contributors
 
 import os, json, shutil
 from pathlib import Path
@@ -141,13 +144,14 @@ series_map = {
 
 # Country CLI labels will be added dynamically from config with filenames like <country>_cli_oecd.csv
 def cli_filename_from_label(label: str) -> str:
+    # Simple normalized key from label (not used by logic now, reserved)
     key = (label.lower()
                  .replace("oecd", "")
                  .replace("cli", "")
                  .replace("(amplitude adj., sa)", "")
                  .replace("(", "").replace(")", "")
                  .replace(" ", "").replace(",", "").replace("–","-"))
-    return f"{key}_cli_oecd.csv"  # will be overridden by workflow names
+    return f"{key}_cli_oecd.csv"
 
 # Direction mapping & sign
 def direction_for_label(label: str):
@@ -165,17 +169,16 @@ def direction_for_label(label: str):
         return "negative_is_risky", -1
     return "ambiguous", +1
 
-
+# Human-readable wording for direction
 def human_direction(direction_name: str) -> str:
     """
-    Map internal direction flags to friendly wording.
+    Map internal direction flags to friendly wording for display.
     """
     if direction_name == "negative_is_risky":
         return "Below trend → higher risk"
     if direction_name == "positive_is_risky":
         return "Rising → higher risk"
     return "—"
-
 
 # ---------------------
 # Build readings & composite
@@ -184,7 +187,7 @@ display_rows = []          # [(label, last_date, last_val, last_z)]
 contrib_rows  = []         # [(label, last_z, direction, contribution)]
 z_values      = []         # list of contributions
 
-# 1) US + ECB table items
+# 1) US + ECB table items (also contribute to composite)
 for label, fname in series_map.items():
     path = DATA_DIR / fname
     s = load_series(path, weekly_resample=True)
@@ -196,12 +199,12 @@ for label, fname in series_map.items():
     last_z    = zs.iloc[-1] if not np.isnan(zs.iloc[-1]) else np.nan
     display_rows.append((label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}"))
     if not np.isnan(last_z):
-        dir_name, sign = direction_for_label(label)
+        dname, sign = direction_for_label(label)
         contribution = sign * float(last_z)
-        contrib_rows.append((label, float(last_z), dir_name, contribution))
+        contrib_rows.append((label, float(last_z), dname, contribution))
         z_values.append(contribution)
 
-# 2) Country CLIs (from config)
+# 2) Country CLIs (from config) — also contribute to composite (as "below-trend → higher risk")
 for c in CFG["countries"]:
     cli_label = c["cli_label"]
     safe = (c["name"].lower().replace(" ", "_"))
@@ -215,9 +218,9 @@ for c in CFG["countries"]:
     last_z    = zs.iloc[-1] if not np.isnan(zs.iloc[-1]) else np.nan
     display_rows.append((cli_label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}"))
     if not np.isnan(last_z):
-        dir_name, sign = direction_for_label(cli_label)  # negative_is_risky
+        dname, sign = direction_for_label(cli_label)  # negative_is_risky expected for CLI
         contribution = sign * float(last_z)
-        contrib_rows.append((cli_label, float(last_z), dir_name, contribution))
+        contrib_rows.append((cli_label, float(last_z), dname, contribution))
         z_values.append(contribution)
 
 # Composite = mean of contributions
@@ -313,7 +316,6 @@ html.append("<title>Global Crisis Early Warning – Dashboard</title>")
 html.append("""
 <style>
 body{font-family:Arial,Helvetica,sans-serif;margin:24px;}
-h3.section { color:#2f3b49; 
 table{border-collapse:collapse;margin-top:12px;}
 th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:middle;}
 th{background:#f4f6f8;}
@@ -370,10 +372,22 @@ caption {
   font-weight: bold;
   padding-bottom: 6px;
 }
+
+/* (Optional) soft header color for section headings */
+h3.section { color:#2f3b49; }
 </style>
 """)
 html.append("</head><body>")
 html.append("<h1>Global Crisis Early Warning – Dashboard</h1>")
+html.append(f"<p class='small'>Generated: {now}</p>")
+
+# Composite hero (badge & comp_str must be defined BEFORE hero block)
+badge = "<span class='badge ok'>OK</span>"
+if level == "WATCH":
+    badge = "<span class='badge watch'>WATCH</span>"
+if level == "ALERT":
+    badge = "<span class='badge alert'>ALERT</span>"
+comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 
 html.append(
     "<div style='margin:18px 0 12px 0;padding:14px 16px;border:1px solid #e0e0e0;"
@@ -389,15 +403,7 @@ html.append(
     "</div>"
 )
 
-badge = "<span class='badge ok'>OK</span>"
-if level == "WATCH":
-    badge = "<span class='badge watch'>WATCH</span>"
-if level == "ALERT":
-    badge = "<span class='badge alert'>ALERT</span>"
-comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
-html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
-
-# Contributors (with Δ vs prev)
+# Contributors (with Δ vs prev) — use plain language for direction
 html.append("<h3 class='section'>Contributors (sign-adjusted Z)</h3>")
 html.append("<table><tr><th>Indicator</th><th>Z-score</th><th>Direction</th><th>Contribution</th><th>Δ vs prev</th><th>Share</th></tr>")
 if contributors_sorted:
@@ -428,7 +434,14 @@ for r in display_rows:
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td class='num'>{r[2]}</td><td class='num'>{r[3]}</td></tr>")
 html.append("</table>")
 
-# Country blocks — wrap each country in a card, align numerics, nicer missing FX message
+# Country blocks — wrap each country in a card, align numerics, friendlier missing FX message
+def spark_from_file(file_name: str, tail_points: int = 52) -> str:
+    path = DATA_DIR / file_name
+    s = load_series(path, weekly_resample=True)
+    if s.empty:
+        return ""
+    return sparkline_svg(s.tail(tail_points).tolist())
+
 for c in country_states:
     name = c["name"]
     sub  = c["subscore"]
@@ -443,14 +456,6 @@ for c in country_states:
     # find rows for cli & fx from display_rows
     cli_row = next((r for r in display_rows if r[0] == c["cli_label"]), None)
     fx_row  = next((r for r in display_rows if r[0] == c["fx_label"]),  None)
-
-    # Prepare sparklines
-    def spark_from_file(file_name: str, tail_points: int = 52) -> str:
-        path = DATA_DIR / file_name
-        s = load_series(path, weekly_resample=True)
-        if s.empty:
-            return ""
-        return sparkline_svg(s.tail(tail_points).tolist())
 
     html.append("<div class='country'>")
     html.append(f"<h3>{name}</h3>")
@@ -480,6 +485,7 @@ for c in country_states:
     html.append("</table>")
     html.append("</div>")  # end .country
 
+# Notes (clean bullets)
 html.append(
     "<ul class='small'>"
     "<li>Z-scores use a rolling historical window.</li>"
@@ -513,3 +519,4 @@ state = {
 }
 (OUT_DIR / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 print("✅ Wrote output/state.json")
+
