@@ -1,3 +1,4 @@
+
 name: Crisis Dashboard Automation
 
 on:
@@ -88,3 +89,181 @@ jobs:
 
       - name: Download OECD China CLI (MEI_CLI LOLITOAA.CHN.M)
         run: |
+          set -e
+          python pipeline/update_oecd_cli.py
+          echo "---- Show first 5 lines of OECD China CLI CSV ----"
+          head -n 5 data/china_cli_oecd.csv || true
+
+      # --- 23A: Add Japan CLI from OECD (LOLITOAA.JPN.M) ---
+      - name: Download OECD Japan CLI (MEI_CLI LOLITOAA.JPN.M)
+        run: |
+          set -e
+          python pipeline/update_oecd_cli_japan.py
+          echo "---- Show first 5 lines of OECD Japan CLI CSV ----"
+          head -n 5 data/japan_cli_oecd.csv || true
+
+      # --- 23B: Add Euro Area CLI from OECD (LOLITOAA.EA19.M) ---
+      - name: Download OECD Euro Area CLI (MEI_CLI LOLITOAA.EA19.M)
+        run: |
+          set -e
+          python pipeline/update_oecd_cli_ea.py
+          echo "---- Show first 5 lines of OECD EA CLI CSV ----"
+          head -n 5 data/euroarea_cli_oecd.csv || true
+
+      - name: Fetch previous state.json (if exists)
+        run: |
+          set -euxo pipefail
+          mkdir -p output
+          BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}"
+          # Try to download the live state.json from last deploy
+          curl -fsSL "$BASE/state.json" -o output/prev_state.json || echo "No previous state found."
+          [ -f output/prev_state.json ] && echo "---- prev_state.json (head) ----" && head -n 20 output/prev_state.json || true
+
+      - name: Generate dashboard HTML
+        run: |
+          set -euxo pipefail
+          python pipeline/compute_dashboard.py
+          echo "---- List output dir ----"
+          ls -l output || true
+          echo "---- Preview top of index.html ----"
+          head -n 40 output/index.html || true
+
+      - name: Upload dashboard state JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-state
+          path: output/state.json
+
+      - name: Create/Update ALERT issue (if triggered)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs'); // github-script provides 'core' and 'github' already
+
+            function readJSON(p) {
+              try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+              catch (e) { return null; }
+            }
+
+            const cur = readJSON('output/state.json');
+            if (!cur) { core.info('state.json not found; skipping alert issue.'); return; }
+            const prev = readJSON('output/prev_state.json');
+
+            const alerting = [];
+            if (cur.composite_level === 'ALERT') alerting.push('Global Composite');
+            if (cur.china_level === 'ALERT') alerting.push('China Subscore');
+
+            if (alerting.length === 0) { core.info('No ALERT levels; skipping issue.'); return; }
+
+            const repoFull = process.env.GITHUB_REPOSITORY || '';
+            const parts = repoFull.split('/');
+            if (parts.length < 2) { core.warning('GITHUB_REPOSITORY invalid; skipping issue.'); return; }
+            const owner = parts[0], repo = parts[1];
+
+            // Ensure 'alert' label exists (create if missing)
+            try { await github.rest.issues.getLabel({ owner, repo, name: 'alert' }); }
+            catch (e) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: 'alert', color: 'D93F0B',
+                  description: 'Auto-created label for Crisis Dashboard ALERTs'
+                });
+                core.info('Created label: alert');
+              } catch (e2) { core.warning('Could not create label "alert": ' + String(e2)); }
+            }
+
+            const generated = cur.generated_utc || '-';
+            const compositeVal = (cur.composite ?? '-');
+            const compositeLvl = cur.composite_level || '-';
+            const chinaVal = (cur.china_subscore ?? '-');
+            const chinaLvl = cur.china_level || '-';
+
+            let body =
+              '**Generated (UTC):** ' + generated + '\n\n' +
+              '**Global Composite:** ' + compositeVal + '  —  **Level:** ' + compositeLvl + '\n' +
+              '**China Subscore:** ' + chinaVal + '  —  **Level:** ' + chinaLvl + '\n\n' +
+              'Dashboard: https://' + owner + '.github.io/' + repo + '/';
+
+            // Top movers vs previous run (if both contributions available)
+            const curC = (cur.contributions || {});
+            const prevC = (prev && prev.contributions) ? prev.contributions : {};
+            const movers = Object.keys(curC).map(k => ({
+              label: k, delta: (Number(curC[k]) - Number(prevC[k] || 0))
+            }));
+            movers.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
+            const top = movers.slice(0, 3);
+            if (top.length > 0) {
+              body += '\n\n**Top Movers vs previous run**\n' +
+                top.map(m => '• ' + m.label + ': ' + (m.delta>=0?'+':'') + m.delta.toFixed(2))
+                   .join('\n');
+            }
+
+            const title = '🚨 Crisis Dashboard ALERT: ' + alerting.join(' & ') + ' (' + generated + ')';
+
+            // Reuse a single open 'alert' issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'alert'
+            });
+
+            if (issues.length > 0) {
+              const issue = issues[0];
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, title, body });
+              core.info('Updated existing alert issue #' + issue.number);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner, repo, title, body, labels: ['alert']
+              });
+              core.info('Created alert issue #' + issue.number);
+            }
+
+      - name: Upload data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collected-data
+          path: data/*.csv
+
+      - name: Upload dashboard HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-html
+          path: output/index.html
+
+      # Summarize the run so you always see the live URL & files in the Summary tab
+      - name: Write run summary (Pages URL & artifacts)
+        run: |
+          set -e
+          URL="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}/"
+          {
+            echo "## Crisis Dashboard – Run Summary"
+            echo ""
+            echo "**Live URL:** ${URL}"
+            echo ""
+            echo "### Output"
+            ls -l output || true
+            echo ""
+            echo "### Data"
+            ls -l data | head -n 40 || true
+          } >> $GITHUB_STEP_SUMMARY
+
+      # Configure Pages before uploading site artifact
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+  deploy:
+    needs: build-and-render
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
