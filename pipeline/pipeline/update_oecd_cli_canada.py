@@ -1,20 +1,43 @@
-import os, io, requests, pandas as pd
 
-URL = "https://stats.oecd.org/SDMX-JSON/data/MEI_CLI/LOLITOAA.CAN.M/all?contentType=csv"
+import os
+import pandas as pd
+from ingestors.ecb_sdmx import ecb_series
 
 def main():
     os.makedirs("data", exist_ok=True)
-    r = requests.get(URL, timeout=60); r.raise_for_status()
-    df = pd.read_csv(io.StringIO(r.text))
-    if not {"TIME_PERIOD","OBS_VALUE"}.issubset(df.columns):
-        raise RuntimeError(f"Unexpected OECD CSV columns: {df.columns.tolist()}")
-    out = (df[["TIME_PERIOD","OBS_VALUE"]]
-           .rename(columns={"TIME_PERIOD":"date","OBS_VALUE":"value"})
-           .dropna(subset=["value"]).copy())
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out = out.dropna(subset=["date"]).sort_values("date")
-    out.to_csv("data/canada_cli_oecd.csv", index=False)
-    print(f"✅ Wrote data/canada_cli_oecd.csv with {len(out)} rows.")
+
+    # 1) Base USD per EUR (monthly) -> KEEP as date,value for the dashboard
+    usd_eur_raw = ecb_series("EXR", "M.USD.EUR.SP00.A", params={"startPeriod": "2005-01"})
+    usd_eur_raw.to_csv("data/eur_usd_ecb.csv", index=False)  # <-- date,value (no rename)
+    print(f"✅ Wrote data/eur_usd_ecb.csv with {len(usd_eur_raw)} rows.")
+
+    # Prepare in-memory renamed columns for cross derivations
+    usd_eur = usd_eur_raw.rename(columns={"value": "usd_per_eur"})
+
+    # 2) Other per-EUR series (renamed only in-memory)
+    cny_eur = ecb_series("EXR", "M.CNY.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "cny_per_eur"})
+    jpy_eur = ecb_series("EXR", "M.JPY.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "jpy_per_eur"})
+    gbp_eur = ecb_series("EXR", "M.GBP.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "gbp_per_eur"})
+    cad_eur = ecb_series("EXR", "M.CAD.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "cad_per_eur"})
+
+    # (Optional) persist the per-EUR inputs if you want them for QA
+    # cny_eur.rename(columns={"cny_per_eur": "value"}).to_csv("data/eur_cny_ecb.csv", index=False)
+    # jpy_eur.rename(columns={"jpy_per_eur": "value"}).to_csv("data/eur_jpy_ecb.csv", index=False)
+    # gbp_eur.rename(columns={"gbp_per_eur": "value"}).to_csv("data/eur_gbp_ecb.csv", index=False)
+    # cad_eur.rename(columns={"cad_per_eur": "value"}).to_csv("data/eur_cad_ecb.csv", index=False)
+
+    # --- Derived USD crosses written as date,value (dashboard reads these) ---
+    def derive_usd_cross(other_df, other_col, out_csv):
+        df = pd.merge(usd_eur, other_df, on="date", how="inner")
+        df["value"] = df["usd_per_eur"] / df[other_col]
+        out = df[["date", "value"]]
+        out.to_csv(out_csv, index=False)
+        print(f"✅ Wrote {out_csv} with {len(out)} rows.")
+
+    derive_usd_cross(cny_eur, "cny_per_eur", "data/usd_cny_ecb.csv")
+    derive_usd_cross(jpy_eur, "jpy_per_eur", "data/usd_jpy_ecb.csv")
+    derive_usd_cross(gbp_eur, "gbp_per_eur", "data/usd_gbp_ecb.csv")
+    derive_usd_cross(cad_eur, "cad_per_eur", "data/usd_cad_ecb.csv")
 
 if __name__ == "__main__":
     main()
