@@ -1,45 +1,76 @@
-import os
+import io
+import requests
 import pandas as pd
-from ingestors.ecb_sdmx import ecb_series
+from pathlib import Path
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+# ECB SDMX-CSV: dataset EXR, key = FREQUENCY.CURRENCY.DENOMINATOR.SERIES_VARIATION.UNIT
+# We want daily (D) spot at 2pm CET (SP00) against EUR (denominator), unit A.
+# Example: D.USD.EUR.SP00.A  -> USD per EUR
+ECB_URL = "https://sdw-wsrest.ecb.europa.eu/service/data/EXR/D.{CUR}.EUR.SP00.A?contentType=csv"
+
+CURRENCIES = [
+    "USD", "GBP", "CAD", "JPY", "CNY", "INR", "RUB"
+]
+
+def pull_cur(cur: str) -> pd.Series:
+    url = ECB_URL.format(CUR=cur)
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    df = pd.read_csv(io.StringIO(r.text))
+    # Expect TIME_PERIOD and OBS_VALUE columns
+    if not {"TIME_PERIOD", "OBS_VALUE"}.issubset(df.columns):
+        raise RuntimeError(f"Unexpected CSV columns for {cur}: {df.columns.tolist()}")
+    df = df.rename(columns={"TIME_PERIOD":"date", "OBS_VALUE":"value"})
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value"]).sort_values("date")
+    return df.set_index("date")["value"]
 
 def main():
-    os.makedirs("data", exist_ok=True)
+    series = {}
+    for cur in CURRENCIES:
+        try:
+            s = pull_cur(cur)
+            series[cur] = s
+            # Save the raw per-EUR series too for debugging
+            out = pd.DataFrame({"date": s.index, "value": s.values})
+            out.to_csv(DATA_DIR / f"{cur.lower()}_per_eur_ecb.csv", index=False)
+            print(f"✅ Wrote {cur.lower()}_per_eur_ecb.csv ({len(out)} rows)")
+        except Exception as e:
+            print(f"⚠️ Failed {cur}: {e}")
 
-    # Base USD/EUR (monthly)
-    usd_eur = ecb_series("EXR", "M.USD.EUR.SP00.A", params={"startPeriod": "2005-01"})
-    usd_eur = usd_eur.rename(columns={"value": "usd_per_eur"})
-    usd_eur.to_csv("data/eur_usd_ecb.csv", index=False)  # keep legacy file for dashboard
-    print(f"✅ Wrote data/eur_usd_ecb.csv with {len(usd_eur)} rows.")
+    # Derive USD per X (USD/X) using:
+    # USD/X = (USD per EUR) / (X per EUR)
+    if "USD" in series:
+        usd_per_eur = series["USD"]
+        def derive(pair_cur: str, out_name: str):
+            if pair_cur not in series:
+                print(f"⚠️ Missing {pair_cur} per EUR; cannot derive {out_name}")
+                return
+            x_per_eur = series[pair_cur]
+            df = pd.concat([usd_per_eur, x_per_eur], axis=1, join="inner")
+            df.columns = ["usd_per_eur", f"{pair_cur.lower()}_per_eur"]
+            df["value"] = df["usd_per_eur"] / df[f"{pair_cur.lower()}_per_eur"]
+            out = df[["value"]].reset_index().rename(columns={"index":"date"})
+            out.to_csv(DATA_DIR / out_name, index=False)
+            print(f"✅ Wrote {out_name} ({len(out)} rows)")
 
-    # Crosses per EUR (monthly)
-    cny_eur = ecb_series("EXR", "M.CNY.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "cny_per_eur"})
-    cny_eur.to_csv("data/eur_cny_ecb.csv", index=False)
-    print(f"✅ Wrote data/eur_cny_ecb.csv with {len(cny_eur)} rows.")
+        derive("JPY", "usd_jpy_ecb.csv")
+        derive("CNY", "usd_cny_ecb.csv")
+        derive("GBP", "usd_gbp_ecb.csv")
+        derive("CAD", "usd_cad_ecb.csv")
+        derive("INR", "usd_inr_ecb.csv")
+        derive("RUB", "usd_rub_ecb.csv")
 
-    jpy_eur = ecb_series("EXR", "M.JPY.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "jpy_per_eur"})
-    jpy_eur.to_csv("data/eur_jpy_ecb.csv", index=False)
-    print(f"✅ Wrote data/eur_jpy_ecb.csv with {len(jpy_eur)} rows.")
-
-    gbp_eur = ecb_series("EXR", "M.GBP.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "gbp_per_eur"})
-    gbp_eur.to_csv("data/eur_gbp_ecb.csv", index=False)
-    print(f"✅ Wrote data/eur_gbp_ecb.csv with {len(gbp_eur)} rows.")
-
-    cad_eur = ecb_series("EXR", "M.CAD.EUR.SP00.A", params={"startPeriod": "2005-01"}).rename(columns={"value": "cad_per_eur"})
-    cad_eur.to_csv("data/eur_cad_ecb.csv", index=False)
-    print(f"✅ Wrote data/eur_cad_ecb.csv with {len(cad_eur)} rows.")
-
-    # --- Derived USD crosses ---
-    def derive_usd_cross(other_df, other_col, out_csv):
-        df = pd.merge(usd_eur, other_df, on="date", how="inner")
-        df["value"] = df["usd_per_eur"] / df[other_col]
-        out = df[["date", "value"]]
-        out.to_csv(out_csv, index=False)
-        print(f"✅ Wrote {out_csv} with {len(out)} rows.")
-
-    derive_usd_cross(cny_eur, "cny_per_eur", "data/usd_cny_ecb.csv")
-    derive_usd_cross(jpy_eur, "jpy_per_eur", "data/usd_jpy_ecb.csv")
-    derive_usd_cross(gbp_eur, "gbp_per_eur", "data/usd_gbp_ecb.csv")
-    derive_usd_cross(cad_eur, "cad_per_eur", "data/usd_cad_ecb.csv")
+        # Also store the USD per EUR directly for users of EUR countries
+        eur = pd.DataFrame({"date": usd_per_eur.index, "value": usd_per_eur.values})
+        eur.to_csv(DATA_DIR / "eur_usd_ecb.csv", index=False)
+        print(f"✅ Wrote eur_usd_ecb.csv ({len(eur)} rows)")
+    else:
+        print("❌ USD per EUR not available; cannot derive USD/X")
 
 if __name__ == "__main__":
     main()
+
