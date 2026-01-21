@@ -1,38 +1,51 @@
 
-import os
+import os, io, json
+from datetime import datetime
 import requests
-import csv
+import pandas as pd
+from pathlib import Path
 
-FRED_API_KEY = os.getenv("FRED_API_KEY")
-BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+FRED_KEY = os.getenv("FRED_API_KEY", "").strip()
 
 SERIES = {
-    "yield_curve_10y_3m": "T10Y3M",
-    "unemployment_rate": "UNRATE",
-    "hy_credit_spread": "BAMLH0A0HYM2"
+    "yield_curve_10y_3m.csv": "T10Y3M",       # 10-Year Treasury Constant Maturity Minus 3-Month Treasury
+    "unemployment_rate.csv":  "UNRATE",       # Unemployment rate (%)
+    "hy_credit_spread.csv":   "BAMLH0A0HYM2"  # ICE BofA US High Yield OAS (bps)
 }
 
-os.makedirs("data", exist_ok=True)
+BASE = "https://api.stlouisfed.org/fred/series/observations"
 
-for name, series_id in SERIES.items():
+def fetch_series(series_id: str) -> pd.DataFrame:
     params = {
         "series_id": series_id,
-        "api_key": FRED_API_KEY,
-        "file_type": "json"
+        "file_type": "json",
+        "observation_start": "1980-01-01"
     }
+    if FRED_KEY:
+        params["api_key"] = FRED_KEY
+    r = requests.get(BASE, params=params, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    obs = data.get("observations", [])
+    if not obs:
+        return pd.DataFrame(columns=["date","value"])
+    df = pd.DataFrame(obs)[["date","value"]].copy()
+    # Numeric coercion, keep NaN rows out
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value"])
+    return df
 
-    response = requests.get(BASE_URL, params=params)
-    response.raise_for_status()
+def main():
+    for out_name, sid in SERIES.items():
+        try:
+            df = fetch_series(sid)
+            df.to_csv(DATA_DIR / out_name, index=False)
+            print(f"✅ Wrote {DATA_DIR/out_name} with {len(df)} rows.")
+        except Exception as e:
+            print(f"⚠️ Failed {sid} -> {out_name}: {e}")
 
-    observations = response.json()["observations"]
-
-    filename = f"data/{name}.csv"
-    with open(filename, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["date", "value"])
-        for obs in observations:
-            if obs["value"] != ".":
-                writer.writerow([obs["date"], obs["value"]])
-
-print("✅ FRED data downloaded successfully")
-
+if __name__ == "__main__":
+    main()
