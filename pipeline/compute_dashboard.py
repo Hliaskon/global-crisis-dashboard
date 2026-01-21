@@ -37,6 +37,7 @@ series_map = {
     "US Unemployment Rate (%)": "unemployment_rate.csv",
     "US HY OAS (bps)": "hy_credit_spread.csv",
     "ECB USD per EUR (monthly)": "eur_usd_ecb.csv",
+    "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
 }
 
 display_rows = []
@@ -80,7 +81,10 @@ for label, fname in series_map.items():
             z_values.append(last_z)
         # ECB USD per EUR higher = stronger USD = tighter global liquidity = risk
         elif "USD per EUR" in label:
+            z_values.append(last_z)      
+        elif "USD/CNY" in label:
             z_values.append(last_z)
+
 
 # Compute composite
 composite = np.nan
