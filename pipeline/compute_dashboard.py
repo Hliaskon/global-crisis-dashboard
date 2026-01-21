@@ -31,13 +31,14 @@ def zscore(s: pd.Series):
     return (s - mu) / sd
 
 # --- Indicators we display ---
-# Existing US indicators + ECB USD/EUR
+# Global/US block + ECB USD/EUR stays as before
 series_map = {
     "US Yield Curve 10Y–3M (bps)": "yield_curve_10y_3m.csv",
     "US Unemployment Rate (%)": "unemployment_rate.csv",
     "US HY OAS (bps)": "hy_credit_spread.csv",
     "ECB USD per EUR (monthly)": "eur_usd_ecb.csv",
     "USD/CNY (derived, ECB monthly)": "usd_cny_ecb.csv",
+    # China block (we'll render separately below too)
     "OECD China CLI (amplitude adj., SA)": "china_cli_oecd.csv",
 }
 
@@ -103,6 +104,50 @@ if not np.isnan(composite):
     elif composite >= 1.0:
         level = "WATCH"
 
+
+# --- China sub-bucket ---
+china_items = [
+    ("OECD China CLI (amplitude adj., SA)", "negative_is_risky", 0.60),
+    ("USD/CNY (derived, ECB monthly)", "positive_is_risky", 0.40),
+]
+
+china_scores = []
+for label, direction, w in china_items:
+    path = DATA_DIR / series_map[label]
+    if not path.exists():
+        continue
+    s = load_series(path, weekly_resample=True)
+    if s.empty:
+        continue
+    zs = zscore(s)
+    z_last = zs.iloc[-1] if len(zs) else np.nan
+    if np.isnan(z_last):
+        continue
+    # Direction mapping
+    if direction == "negative_is_risky":
+        score = -float(z_last)
+    elif direction == "positive_is_risky":
+        score = float(z_last)
+    else:
+        score = float(z_last)
+    china_scores.append((score, w))
+
+china_subscore = np.nan
+if china_scores:
+    # weighted average
+    total_w = sum(w for _, w in china_scores)
+    if total_w > 0:
+        china_subscore = sum(score * w for score, w in china_scores) / total_w
+
+# Optional local watch/alert thresholds for China block
+china_level = "OK"
+if not np.isnan(china_subscore):
+    if china_subscore >= 2.0:
+        china_level = "ALERT"
+    elif china_subscore >= 1.0:
+        china_level = "WATCH"
+
+
 # Render a simple HTML
 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 html = []
@@ -135,6 +180,23 @@ html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><
 for r in display_rows:
     html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>")
 html.append("</table>")
+
+
+# ---- China block with subscore ----
+html.append("<h3>China</h3>")
+badge_cn = "<span class='badge ok'>OK</span>"
+if china_level == "WATCH": badge_cn = "<span class='badge watch'>WATCH</span>"
+if china_level == "ALERT": badge_cn = "<span class='badge alert'>ALERT</span>"
+cn_str = "-" if np.isnan(china_subscore) else f"{china_subscore:.2f}"
+html.append(f"<p><b>China Subscore:</b> {cn_str} {badge_cn}</p>")
+
+# Render the two China lines below (reusing the same 'display_rows' map)
+html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th></tr>")
+for r in display_rows:
+    if "China CLI" in r[0] or "USD/CNY" in r[0]:
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>")
+html.append("</table>")
+
 
 html.append("<p class='small'>Notes: Z-scores use a rolling historical window. Direction mapping: "
             "curve inversion (more negative) = risk; HY OAS ↑ = risk; unemployment ↑ = risk; USD per EUR ↑ = risk (USD strength).</p>")
