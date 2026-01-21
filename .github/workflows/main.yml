@@ -80,12 +80,27 @@ jobs:
             head -n 5 "$f" || true
           done
 
+
+
+      - name: Compile Python pipeline scripts (preflight)
+        run: |
+          set -euxo pipefail
+          python -m py_compile \
+            pipeline/update_ecb_data.py \
+            pipeline/update_oecd_cli.py \
+            pipeline/update_oecd_cli_japan.py \
+            pipeline/update_oecd_cli_ea.py \
+            pipeline/compute_dashboard.py
+
+
       - name: Download ECB EXR data (pipeline script)
         run: |
           set -euxo pipefail
           python pipeline/update_ecb_data.py
           echo "---- Show first 5 lines of ECB CSV ----"
           head -n 5 data/eur_usd_ecb.csv || true
+
+
 
       - name: Download OECD China CLI (MEI_CLI LOLITOAA.CHN.M)
         run: |
