@@ -1,4 +1,3 @@
-
 name: Crisis Dashboard Automation
 
 on:
@@ -10,6 +9,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  issues: write
 
 concurrency:
   group: "pages"
@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,16 +27,10 @@ jobs:
       - name: Print runner environment
         run: |
           set -euxo pipefail
-          echo "---- OS & shell ----"
           uname -a
           echo "SHELL=$SHELL"
-          echo "---- Working directory ----"
-          pwd
-          echo "---- Tree (repo root) ----"
+          python --version
           ls -la
-          echo "---- Python on path (before setup) ----"
-          command -v python || true
-          python --version || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,44 +42,6 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install requests pandas numpy pyyaml
-          echo "---- pip freeze (grep sdmx) ----"
-          pip freeze | grep -i sdmx || true
-
-      - name: Verify repository layout and adapter source
-        run: |
-          set -euxo pipefail
-          echo "---- List directories ----"
-          ls -la
-          echo "---- List ingestors/ ----"
-          ls -la ingestors || true
-          echo "---- Show ingestors/__init__.py ----"
-          sed -n '1,120p' ingestors/__init__.py || true
-          echo "---- Show ingestors/ecb_sdmx.py ----"
-          sed -n '1,200p' ingestors/ecb_sdmx.py || true
-          echo "---- Show pipeline/update_ecb_data.py ----"
-          sed -n '1,220p' pipeline/update_ecb_data.py || true
-
-      # Robust preflight: compile only files that exist
-      - name: Compile Python pipeline scripts (preflight)
-        run: |
-          set -euxo pipefail
-          FILES="
-            pipeline/update_ecb_data.py
-            pipeline/update_oecd_cli.py
-            pipeline/update_oecd_cli_japan.py
-            pipeline/update_oecd_cli_ea.py
-            pipeline/update_oecd_cli_uk.py
-            pipeline/update_oecd_cli_canada.py
-            pipeline/compute_dashboard.py
-          "
-          for f in $FILES; do
-            if [ -f "$f" ]; then
-              echo "Compiling: $f"
-              python -m py_compile "$f"
-            else
-              echo "Skipping missing: $f"
-            fi
-          done
 
       - name: Download FRED data
         env:
@@ -96,61 +51,79 @@ jobs:
           python pipeline/update_fred_data.py
           echo "---- List data dir ----"
           ls -l data || true
-          echo "---- Show first 5 lines of each CSV ----"
-          for f in data/*.csv; do
-            echo "FILE: $f"
-            head -n 5 "$f" || true
-          done
+          echo "---- Preview CSVs ----"
+          for f in data/*.csv; do echo "FILE: $f"; head -n 5 "$f" || true; done
 
-      - name: Download ECB EXR data (pipeline script)
+      - name: Download ECB EXR data (FX) and derive USD/X
         run: |
           set -euxo pipefail
           python pipeline/update_ecb_data.py
-          echo "---- Show first 5 lines of ECB USD/EUR CSV ----"
+          echo "---- Show USD/EUR & USD/JPY 5 lines ----"
           head -n 5 data/eur_usd_ecb.csv || true
+          head -n 5 data/usd_jpy_ecb.csv || true
 
-      - name: Download OECD China CLI (MEI_CLI LOLITOAA.CHN.M)
+      # OECD CLI pulls (amplitude-adjusted, monthly)
+      - name: Download OECD CLI - China
         run: |
-          set -e
-          python pipeline/update_oecd_cli.py
-          echo "---- Show first 5 lines of OECD China CLI CSV ----"
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py CHN china_cli_oecd.csv
           head -n 5 data/china_cli_oecd.csv || true
 
-      - name: Download OECD Japan CLI (MEI_CLI LOLITOAA.JPN.M)
+      - name: Download OECD CLI - Japan
         run: |
-          set -e
-          python pipeline/update_oecd_cli_japan.py
-          echo "---- Show first 5 lines of OECD Japan CLI CSV ----"
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py JPN japan_cli_oecd.csv
           head -n 5 data/japan_cli_oecd.csv || true
 
-      - name: Download OECD Euro Area CLI (MEI_CLI LOLITOAA.EA19.M)
+      - name: Download OECD CLI - Germany
         run: |
-          set -e
-          python pipeline/update_oecd_cli_ea.py
-          echo "---- Show first 5 lines of OECD EA CLI CSV ----"
-          head -n 5 data/euroarea_cli_oecd.csv || true
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py DEU germany_cli_oecd.csv
+          head -n 5 data/germany_cli_oecd.csv || true
 
-      - name: Download OECD UK CLI (MEI_CLI LOLITOAA.GBR.M)
+      - name: Download OECD CLI - France
         run: |
-          set -e
-          python pipeline/update_oecd_cli_uk.py
-          echo "---- Show first 5 lines of OECD UK CLI CSV ----"
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py FRA france_cli_oecd.csv
+          head -n 5 data/france_cli_oecd.csv || true
+
+      - name: Download OECD CLI - Italy
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py ITA italy_cli_oecd.csv
+          head -n 5 data/italy_cli_oecd.csv || true
+
+      - name: Download OECD CLI - UK
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py GBR uk_cli_oecd.csv
           head -n 5 data/uk_cli_oecd.csv || true
 
-      - name: Download OECD Canada CLI (MEI_CLI LOLITOAA.CAN.M)
+      - name: Download OECD CLI - Canada
         run: |
-          set -e
-          python pipeline/update_oecd_cli_canada.py
-          echo "---- Show first 5 lines of OECD Canada CLI CSV ----"
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py CAN canada_cli_oecd.csv
           head -n 5 data/canada_cli_oecd.csv || true
 
-      - name: Fetch previous state.json (if exists)
+      - name: Download OECD CLI - India
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py IND india_cli_oecd.csv
+          head -n 5 data/india_cli_oecd.csv || true
+
+      - name: Download OECD CLI - Russia
+        run: |
+          set -euxo pipefail
+          python pipeline/update_oecd_cli.py RUS russia_cli_oecd.csv
+          head -n 5 data/russia_cli_oecd.csv || true
+
+      - name: Fetch previous state.json (if exists on Pages)
         run: |
           set -euxo pipefail
           mkdir -p output
-          BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}"
-          curl -fsSL "$BASE/state.json" -o output/prev_state.json || echo "No previous state found."
-          [ -f output/prev_state.json ] && echo "---- prev_state.json (head) ----" && head -n 20 output/prev_state.json || true
+          BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}/state.json"
+          curl -fsSL "$BASE" -o output/prev_state.json || echo "No previous state found."
+          [ -f output/prev_state.json ] && { echo "---- prev_state.json (head) ----"; head -n 20 output/prev_state.json; } || true
 
       - name: Generate dashboard HTML
         run: |
@@ -160,96 +133,6 @@ jobs:
           ls -l output || true
           echo "---- Preview top of index.html ----"
           head -n 40 output/index.html || true
-          echo "---- Preview top of composite_history.csv ----"
-          head -n 5 output/composite_history.csv || true
-
-      - name: Upload dashboard state JSON
-        uses: actions/upload-artifact@v4
-        with:
-          name: dashboard-state
-          path: output/state.json
-
-      - name: Create/Update ALERT issue (if triggered)
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs'); // 'core' and 'github' are injected by github-script
-
-            function readJSON(p) {
-              try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
-              catch (e) { return null; }
-            }
-
-            const cur = readJSON('output/state.json');
-            if (!cur) { core.info('state.json not found; skipping alert issue.'); return; }
-            const prev = readJSON('output/prev_state.json');
-
-            const alerting = [];
-            if (cur.composite_level === 'ALERT') alerting.push('Global Composite');
-            if (cur.china_level === 'ALERT') alerting.push('China Subscore');
-
-            if (alerting.length === 0) { core.info('No ALERT levels; skipping issue.'); return; }
-
-            const repoFull = process.env.GITHUB_REPOSITORY || '';
-            const parts = repoFull.split('/');
-            if (parts.length < 2) { core.warning('GITHUB_REPOSITORY invalid; skipping issue.'); return; }
-            const owner = parts[0], repo = parts[1];
-
-            // Ensure 'alert' label exists (create if missing)
-            try { await github.rest.issues.getLabel({ owner, repo, name: 'alert' }); }
-            catch (e) {
-              try {
-                await github.rest.issues.createLabel({
-                  owner, repo, name: 'alert', color: 'D93F0B',
-                  description: 'Auto-created label for Crisis Dashboard ALERTs'
-                });
-                core.info('Created label: alert');
-              } catch (e2) { core.warning('Could not create label \"alert\": ' + String(e2)); }
-            }
-
-            const generated = cur.generated_utc || '-';
-            const compositeVal = (cur.composite ?? '-');
-            const compositeLvl = cur.composite_level || '-';
-            const chinaVal = (cur.china_subscore ?? '-');
-            const chinaLvl = cur.china_level || '-';
-
-            let body =
-              '**Generated (UTC):** ' + generated + '\n\n' +
-              '**Global Composite:** ' + compositeVal + '  —  **Level:** ' + compositeLvl + '\n' +
-              '**China Subscore:** ' + chinaVal + '  —  **Level:** ' + chinaLvl + '\n\n' +
-              'Dashboard: https://' + owner + '.github.io/' + repo + '/';
-
-            // Top movers vs previous run (if both contributions available)
-            const curC = (cur.contributions || {});
-            const prevC = (prev && prev.contributions) ? prev.contributions : {};
-            const movers = Object.keys(curC).map(k => ({
-              label: k, delta: (Number(curC[k]) - Number(prevC[k] || 0))
-            }));
-            movers.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
-            const top = movers.slice(0, 3);
-            if (top.length > 0) {
-              body += '\n\n**Top Movers vs previous run**\n' +
-                top.map(m => '• ' + m.label + ': ' + (m.delta>=0?'+':'') + m.delta.toFixed(2))
-                   .join('\n');
-            }
-
-            const title = '🚨 Crisis Dashboard ALERT: ' + alerting.join(' & ') + ' (' + generated + ')';
-
-            // Reuse a single open 'alert' issue
-            const { data: issues } = await github.rest.issues.listForRepo({
-              owner, repo, state: 'open', labels: 'alert'
-            });
-
-            if (issues.length > 0) {
-              const issue = issues[0];
-              await github.rest.issues.update({ owner, repo, issue_number: issue.number, title, body });
-              core.info('Updated existing alert issue #' + issue.number);
-            } else {
-              const { data: issue } = await github.rest.issues.create({
-                owner, repo, title, body, labels: ['alert']
-              });
-              core.info('Created alert issue #' + issue.number);
-            }
 
       - name: Upload data artifact
         uses: actions/upload-artifact@v4
@@ -263,26 +146,85 @@ jobs:
           name: dashboard-html
           path: output/index.html
 
-      # Run Summary: always shows live URL & lists of output/data
-      - name: Write run summary (Pages URL & artifacts)
-        run: |
-          set -e
-          URL="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}/"
-          {
-            echo "## Crisis Dashboard – Run Summary"
-            echo ""
-            echo "**Live URL:** ${URL}"
-            echo ""
-            echo "### Output"
-            ls -l output || true
-            echo ""
-            echo "### Data"
-            ls -l data | head -n 80 || true
-          } >> $GITHUB_STEP_SUMMARY
+      - name: Upload dashboard state JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-state
+          path: output/state.json
 
-      # Configure Pages before uploading site artifact
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+      - name: Create/Update ALERT issue (if triggered)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const core = require('@actions/core');
+
+            function readJSON(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch(e){ return null; } }
+            const cur  = readJSON('output/state.json');
+            const prev = readJSON('output/prev_state.json');
+            if (!cur) { core.info('state.json not found; skipping alert issue.'); return; }
+
+            const alerting = [];
+            if (cur.composite_level === 'ALERT') alerting.push('Global Composite');
+            if (Array.isArray(cur.countries)) {
+              for (const c of cur.countries) {
+                if (c.level === 'ALERT') alerting.push(c.name + ' Subscore');
+              }
+            }
+            if (alerting.length === 0) { core.info('No ALERT levels; skipping issue.'); return; }
+
+            const repoFull = process.env.GITHUB_REPOSITORY || '';
+            const parts = repoFull.split('/');
+            if (parts.length < 2) { core.warning('GITHUB_REPOSITORY invalid; skipping issue.'); return; }
+            const owner = parts[0], repo = parts[1];
+
+            // Ensure 'alert' label exists
+            try { await github.rest.issues.getLabel({ owner, repo, name: 'alert' }); }
+            catch (e) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: 'alert', color: 'D93F0B',
+                  description: 'Auto-created label for Crisis Dashboard ALERTs'
+                });
+                core.info('Created label: alert');
+              } catch (e2) { core.warning('Could not create label "alert": ' + String(e2)); }
+            }
+
+            const generated = cur.generated_utc || '-';
+            const compVal   = (cur.composite ?? '-');
+            const compLvl   = cur.composite_level || '-';
+
+            // Top 3 Movers vs previous
+            const curC  = cur.contributions || {};
+            const prevC = (prev && prev.contributions) ? prev.contributions : {};
+            const deltas = Object.keys(curC).map(k => ({ label: k, delta: curC[k] - (prevC[k] || 0) }));
+            deltas.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
+            const top3 = deltas.slice(0,3);
+
+            const dashboardUrl = `https://${owner}.github.io/${repo}/`;
+            const lines = [
+              `**Generated (UTC):** ${generated}`,
+              ``,
+              `**Global Composite:** ${compVal} — **Level:** ${compLvl}`,
+              ``,
+              `**Top Movers vs Previous:**`,
+              ...top3.map(t => `• ${t.label}: ${t.delta >= 0 ? '+' : ''}${t.delta.toFixed(2)}`),
+              ``,
+              `Dashboard: ${dashboardUrl}`
+            ];
+            const title = `🚨 Crisis Dashboard ALERT: ${alerting.join(' & ')} (${generated})`;
+            const body  = lines.join('\n');
+
+            // Reuse single open issue with label 'alert'
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: 'alert' });
+            if (issues.length > 0) {
+              const issue = issues[0];
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, title, body });
+              core.info(`Updated existing alert issue #${issue.number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({ owner, repo, title, body, labels: ['alert'] });
+              core.info(`Created alert issue #${issue.number}`);
+            }
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -292,9 +234,6 @@ jobs:
   deploy:
     needs: build-and-render
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
