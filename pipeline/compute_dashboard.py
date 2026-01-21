@@ -142,6 +142,57 @@ series_map = {
     "USD/RUB (derived, ECB)": "usd_rub_ecb.csv",
 }
 
+series_map.update({
+    # Commodities
+    "Gold (LBMA, USD/oz)": "gold_lbma_usd.csv",            # positive_is_risky
+    "Brent crude (USD/bbl)": "brent_spot_fred.csv",         # positive_is_risky
+
+    # Equities (price level)
+    "S&P 500 index (close)": "sp500_fred.csv",              # negative_is_risky (price weakness → risk↑)
+
+    # Rates (policy)
+    "Policy rate – United States (BIS)": "policy_us.csv",
+    "Policy rate – Germany (BIS)": "policy_de.csv",
+    "Policy rate – France (BIS)": "policy_fr.csv",
+    "Policy rate – Italy (BIS)": "policy_it.csv",
+    "Policy rate – United Kingdom (BIS)": "policy_gb.csv",
+    "Policy rate – Canada (BIS)": "policy_ca.csv",
+    "Policy rate – Japan (BIS)": "policy_jp.csv",
+    "Policy rate – India (BIS)": "policy_in.csv",
+    "Policy rate – Russia (BIS)": "policy_ru.csv",
+
+    # Long-term yields (OECD/MEI via FRED)
+    "10Y yield – United States (OECD)": "yield10_us.csv",
+    "10Y yield – Germany (OECD)": "yield10_de.csv",
+    "10Y yield – France (OECD)": "yield10_fr.csv",
+    "10Y yield – Italy (OECD)": "yield10_it.csv",
+    "10Y yield – United Kingdom (OECD)": "yield10_gb.csv",
+    "10Y yield – Japan (OECD)": "yield10_jp.csv",
+    "10Y yield – Canada (OECD)": "yield10_ca.csv",
+
+    # Industrial production (OECD/MEI)
+    "Industrial Production – Germany (OECD)": "ip_de.csv",
+    "Industrial Production – France (OECD)": "ip_fr.csv",
+    "Industrial Production – Italy (OECD)": "ip_it.csv",
+    "Industrial Production – United States (OECD)": "ip_us.csv",
+    "Industrial Production – Japan (OECD)": "ip_jp.csv",
+})
+
+def direction_for_label(label: str):
+    if "S&P 500" in label:
+        return "negative_is_risky", -1
+    if "Gold" in label:
+        return "positive_is_risky", +1
+    if "Brent" in label:
+        return "positive_is_risky", +1
+    if "Policy rate" in label:
+        return "positive_is_risky", +1
+    if "10Y yield" in label:
+        return "positive_is_risky", +1
+    if "Industrial Production" in label:
+        return "negative_is_risky", -1
+    # ... keep the rest of your existing mapping
+
 # Country CLI labels will be added dynamically from config with filenames like <country>_cli_oecd.csv
 def cli_filename_from_label(label: str) -> str:
     # Simple normalized key from label (not used by logic now, reserved)
