@@ -141,7 +141,6 @@ series_map = {
 
 # Country CLI labels will be added dynamically from config with filenames like <country>_cli_oecd.csv
 def cli_filename_from_label(label: str) -> str:
-    # Simple normalized key from label
     key = (label.lower()
                  .replace("oecd", "")
                  .replace("cli", "")
@@ -160,7 +159,7 @@ def direction_for_label(label: str):
         return "positive_is_risky", +1
     if "USD per EUR" in label:      # USD strength
         return "positive_is_risky", +1
-    if label.startswith("USD/"):     # USD/XXX ↑ => risk↑
+    if label.startswith("USD/"):    # USD/XXX ↑ => risk↑
         return "positive_is_risky", +1
     if "CLI" in label:
         return "negative_is_risky", -1
@@ -175,7 +174,6 @@ z_values      = []         # list of contributions
 
 # 1) US + ECB table items
 for label, fname in series_map.items():
-    # we'll filter by config later for display; compute contributions for all we actually have
     path = DATA_DIR / fname
     s = load_series(path, weekly_resample=True)
     if s.empty:
@@ -194,8 +192,6 @@ for label, fname in series_map.items():
 # 2) Country CLIs (from config)
 for c in CFG["countries"]:
     cli_label = c["cli_label"]
-    # filename follows workflow outputs (passed as args there)
-    # We infer based on common convention: <name> lower, no spaces -> *_cli_oecd.csv
     safe = (c["name"].lower().replace(" ", "_"))
     cli_file = DATA_DIR / f"{safe}_cli_oecd.csv"
     s = load_series(cli_file, weekly_resample=True)
@@ -207,3 +203,287 @@ for c in CFG["countries"]:
     last_z    = zs.iloc[-1] if not np.isnan(zs.iloc[-1]) else np.nan
     display_rows.append((cli_label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{last_z:.2f}"))
     if not np.isnan(last_z):
+        dir_name, sign = direction_for_label(cli_label)  # negative_is_risky
+        contribution = sign * float(last_z)
+        contrib_rows.append((cli_label, float(last_z), dir_name, contribution))
+        z_values.append(contribution)
+
+# Composite = mean of contributions
+composite = np.nan if not z_values else float(np.mean(z_values))
+level = "OK"
+if not np.isnan(composite):
+    if composite >= TH_COMP_ALERT:
+        level = "ALERT"
+    elif composite >= TH_COMP_WATCH:
+        level = "WATCH"
+
+# Rank contributors by absolute impact
+contrib_clean = [(l, z, d, c) for (l, z, d, c) in contrib_rows if not np.isnan(c)]
+abs_sum = sum(abs(c) for (_, _, _, c) in contrib_clean) or 0.0
+contributors_sorted = sorted(contrib_clean, key=lambda t: abs(t[3]), reverse=True)
+
+# ---------------------
+# Country subscores
+# ---------------------
+country_states = []   # list of dicts for HTML + state.json
+for c in CFG["countries"]:
+    name      = c["name"]
+    cli_label = c["cli_label"]
+    fx_label  = c["fx_label"]
+    fx_file   = c["fx_source"]
+    w_cli     = float(c.get("weights", {}).get("cli", W_DEF_CLI))
+    w_fx      = float(c.get("weights", {}).get("fx",  W_DEF_FX))
+
+    safe = (name.lower().replace(" ", "_"))
+    cli_path = DATA_DIR / f"{safe}_cli_oecd.csv"
+    fx_path  = DATA_DIR / fx_file
+
+    s_cli = load_series(cli_path, weekly_resample=True)
+    s_fx  = load_series(fx_path,  weekly_resample=True)
+
+    z_cli = zscore(s_cli)
+    z_fx  = zscore(s_fx)
+
+    z_last_cli = z_cli.iloc[-1] if len(z_cli) else np.nan
+    z_last_fx  = z_fx.iloc[-1]  if len(z_fx)  else np.nan
+
+    score_cli = (-float(z_last_cli)) if not np.isnan(z_last_cli) else np.nan   # negative_is_risky
+    score_fx  = ( float(z_last_fx))  if not np.isnan(z_last_fx)  else np.nan   # positive_is_risky
+
+    parts = []
+    if not np.isnan(score_cli):
+        parts.append((score_cli, w_cli))
+    if not np.isnan(score_fx):
+        parts.append((score_fx,  w_fx))
+
+    subscore = np.nan
+    if parts:
+        wsum = sum(w for (_, w) in parts)
+        if wsum > 0:
+            subscore = sum(s*w for (s,w) in parts) / wsum
+
+    lvl = "OK"
+    if not np.isnan(subscore):
+        if subscore >= TH_CT_ALERT:
+            lvl = "ALERT"
+        elif subscore >= TH_CT_WATCH:
+            lvl = "WATCH"
+
+    country_states.append({
+        "name": name,
+        "subscore": None if np.isnan(subscore) else float(subscore),
+        "level": lvl,
+        "cli_label": cli_label, "fx_label": fx_label,
+        "cli_file": f"{safe}_cli_oecd.csv", "fx_file": fx_file,
+    })
+
+# ---------------------
+# Δ vs previous run (for Contributors)
+# ---------------------
+prev_state_path = OUT_DIR / "prev_state.json"
+prev_contrib = {}
+if prev_state_path.exists():
+    try:
+        prev_state = json.loads(prev_state_path.read_text(encoding="utf-8"))
+        prev_contrib = prev_state.get("contributions", {}) or {}
+    except Exception as e:
+        print(f"⚠️ Could not parse prev_state.json: {e}")
+
+current_contrib = {lbl: float(contrib) for (lbl, _z, _d, contrib) in contrib_rows}
+
+# ---------------------
+# Render HTML
+# ---------------------
+now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+html = []
+html.append("<html><head><meta charset='utf-8'>")
+html.append("<title>Global Crisis Early Warning – Dashboard</title>")
+html.append("""
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:24px;}
+table{border-collapse:collapse;margin-top:12px;}
+th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:middle;}
+th{background:#f4f6f8;}
+.badge{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px;}
+.ok{background:#e8f5e9;} .watch{background:#fff8e1;} .alert{background:#ffebee;}
+.pos{color:#b71c1c;} .neg{color:#1b5e20;}
+.small{color:#666;font-size:12px}
+td svg{display:block}
+
+/* ---------- Layout & spacing ---------- */
+h2 { margin-top: 6px; }
+h3 { margin-top: 28px; }
+
+.section {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 2px solid #eee;
+}
+
+/* ---------- Country cards ---------- */
+.country {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-top: 18px;
+  background: #ffffff;
+}
+
+.country h3 {
+  margin-top: 0;
+}
+
+/* ---------- Typography ---------- */
+.subscore {
+  font-size: 18px;
+}
+
+.dim {
+  color: #999;
+  font-style: italic;
+}
+
+th {
+  text-align: left;
+}
+
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+caption {
+  text-align: left;
+  font-weight: bold;
+  padding-bottom: 6px;
+}
+</style>
+""")
+html.append("</head><body>")
+html.append("<h1>Global Crisis Early Warning – Dashboard</h1>")
+html.append(f"<p class='small'>Generated: {now}</p>")
+
+badge = "<span class='badge ok'>OK</span>"
+if level == "WATCH":
+    badge = "<span class='badge watch'>WATCH</span>"
+if level == "ALERT":
+    badge = "<span class='badge alert'>ALERT</span>"
+comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
+html.append(f"<h2>Composite Risk Score: {comp_str} {badge}</h2>")
+
+# Contributors (with Δ vs prev)
+html.append("<h3 class='section'>Contributors (sign-adjusted Z)</h3>")
+html.append("<table><tr><th>Indicator</th><th>Z-score</th><th>Direction</th><th>Contribution</th><th>Δ vs prev</th><th>Share</th></tr>")
+if contributors_sorted:
+    for (lbl, z, dname, c) in contributors_sorted:
+        cls = "pos" if c >= 0 else "neg"
+        prev_c = float(prev_contrib.get(lbl, 0.0)) if prev_contrib else 0.0
+        delta = c - prev_c
+        cls_d = "pos" if delta >= 0 else "neg"
+        share = "-" if abs_sum == 0 else f"{(abs(c)/abs_sum)*100:.0f}%"
+        html.append(
+            f"<tr><td>{lbl}</td>"
+            f"<td class='num'>{z:+.2f}</td>"
+            f"<td>{dname.replace('_',' ')}</td>"
+            f"<td class='num {cls}'>{c:+.2f}</td>"
+            f"<td class='num {cls_d}'>{delta:+.2f}</td>"
+            f"<td class='num'>{share}</td></tr>"
+        )
+else:
+    html.append("<tr><td colspan='6'>No contributions available.</td></tr>")
+html.append("</table>")
+
+# US + ECB table (from config order)
+labels_us = CFG["indicators"]["table_us_ecb"]
+html.append("<h3 class='section'>Key Indicators (US + ECB)</h3>")
+html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th></tr>")
+for r in display_rows:
+    if r[0] in labels_us:
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td class='num'>{r[2]}</td><td class='num'>{r[3]}</td></tr>")
+html.append("</table>")
+
+# Country blocks — wrap each country in a card, align numerics, nicer missing FX message
+for c in country_states:
+    name = c["name"]
+    sub  = c["subscore"]
+    lvl  = c["level"]
+    badge_cn = "<span class='badge ok'>OK</span>"
+    if lvl == "WATCH":
+        badge_cn = "<span class='badge watch'>WATCH</span>"
+    if lvl == "ALERT":
+        badge_cn = "<span class='badge alert'>ALERT</span>"
+    sub_str = "-" if sub is None else f"{sub:.2f}"
+
+    # find rows for cli & fx from display_rows
+    cli_row = next((r for r in display_rows if r[0] == c["cli_label"]), None)
+    fx_row  = next((r for r in display_rows if r[0] == c["fx_label"]),  None)
+
+    # Prepare sparklines
+    def spark_from_file(file_name: str, tail_points: int = 52) -> str:
+        path = DATA_DIR / file_name
+        s = load_series(path, weekly_resample=True)
+        if s.empty:
+            return ""
+        return sparkline_svg(s.tail(tail_points).tolist())
+
+    html.append("<div class='country'>")
+    html.append(f"<h3>{name}</h3>")
+    html.append(f"<p class='subscore'><b>Subscore:</b> {sub_str} {badge_cn}</p>")
+    html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z-Score</th><th>Sparkline (52w)</th><th>Download</th></tr>")
+
+    # CLI row
+    if cli_row:
+        cli_svg = spark_from_file(c["cli_file"])
+        html.append(
+            f"<tr><td>{cli_row[0]}</td><td>{cli_row[1]}</td><td class='num'>{cli_row[2]}</td><td class='num'>{cli_row[3]}</td>"
+            f"<td>{cli_svg}</td><td><a href='data/{c['cli_file']}'>CSV</a></td></tr>"
+        )
+    else:
+        html.append(f"<tr><td colspan='6' class='dim'>{c['cli_label']} not available in this run</td></tr>")
+
+    # FX row
+    if fx_row:
+        fx_svg = spark_from_file(c["fx_file"])
+        html.append(
+            f"<tr><td>{fx_row[0]}</td><td>{fx_row[1]}</td><td class='num'>{fx_row[2]}</td><td class='num'>{fx_row[3]}</td>"
+            f"<td>{fx_svg}</td><td><a href='data/{c['fx_file']}'>CSV</a></td></tr>"
+        )
+    else:
+        html.append("<tr><td colspan='6' class='dim'>FX indicator not available in this run</td></tr>")
+
+    html.append("</table>")
+    html.append("</div>")  # end .country
+
+html.append(
+    "<ul class='small'>"
+    "<li>Z-scores use a rolling historical window.</li>"
+    "<li>Below-trend CLI increases risk; USD strength increases risk.</li>"
+    "<li>Thresholds & weights are configurable in <code>config.yaml</code>.</li>"
+    "</ul>"
+)
+html.append("</body></html>")
+
+# Write HTML
+(OUT_DIR / "index.html").write_text("\n".join(html), encoding="utf-8")
+print("✅ Wrote output/index.html")
+
+# Copy CSVs for download links
+for f in DATA_DIR.glob("*.csv"):
+    shutil.copy2(f, OUT_DIR / "data" / f.name)
+
+# Persist state for automation (ALERT/WATCH) + contributions
+state = {
+    "generated_utc": now,
+    "composite": None if np.isnan(composite) else round(float(composite), 3),
+    "composite_level": level,
+    "countries": [
+        {
+            "name": c["name"],
+            "subscore": None if c["subscore"] is None else round(float(c["subscore"]), 3),
+            "level": c["level"]
+        } for c in country_states
+    ],
+    "contributions": {k: round(float(v), 6) for k, v in current_contrib.items()}
+}
+(OUT_DIR / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+print("✅ Wrote output/state.json")
