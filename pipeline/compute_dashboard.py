@@ -112,18 +112,44 @@ W_CHINA_USDCNY = float(CFG["weights"]["china"]["usdcny"])
 # -------------------------------
 # Helpers
 # -------------------------------
+
 def load_series(csv_path: Path, weekly_resample: bool = True) -> pd.Series:
-    """Load CSV with columns (date,value) into a pandas Series indexed by datetime."""
+    """Load CSV into a Series; prefer 'value' column, else pick the first numeric column."""
     df = pd.read_csv(csv_path)
+
+    # Date column normalization
+    if "date" not in df.columns:
+        # Try common alternatives (rare in our pipeline, but safe to handle)
+        for alt in ["TIME_PERIOD", "Date", "DATE"]:
+            if alt in df.columns:
+                df = df.rename(columns={alt: "date"})
+                break
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # Find value column
+    value_col = "value" if "value" in df.columns else None
+    if value_col is None:
+        # pick the first column (except 'date') that can be coerced to numeric with some non-NaN
+        for c in df.columns:
+            if c == "date":
+                continue
+            ser = pd.to_numeric(df[c], errors="coerce")
+            if ser.notna().sum() > 0:
+                value_col = c
+                df["value"] = ser
+                break
+        if value_col is None:
+            raise ValueError(f"No numeric column found in {csv_path}")
+
+    if value_col == "value":
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+
     df = df.dropna(subset=["date"]).sort_values("date")
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["value"])
     s = df.set_index("date")["value"]
     if weekly_resample:
         s = s.resample("W-FRI").last().interpolate()
     return s
-
 
 def zscore(s: pd.Series) -> pd.Series:
     """Rolling z-score vs history (configurable lookback)."""
