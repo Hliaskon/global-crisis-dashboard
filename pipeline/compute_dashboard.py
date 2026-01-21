@@ -93,6 +93,8 @@ def load_series(csv_path: Path, weekly_resample: bool = True) -> pd.Series:
         s = s.resample("W-FRI").last().interpolate()
     return s
 
+assert not cli_series.equals(other_country_cli_series)
+
 def zscore(s: pd.Series) -> pd.Series:
     if len(s) < 10:
         return s * np.nan
