@@ -175,6 +175,8 @@ series_map = {
    # NEW — Japan
     "USD/JPY (derived, ECB monthly)": "usd_jpy_ecb.csv",
     "OECD Japan CLI (amplitude adj., SA)": "japan_cli_oecd.csv
+   #europe 
+    "OECD Euro Area CLI (amplitude adj., SA)": "euroarea_cli_oecd.csv"
 
 }
 
@@ -414,6 +416,63 @@ if "japan" in CFG["indicators"]:
         svg = spark_from_file(series_map[lbl], tail_points=52)
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
     html.append("</table>")
+
+
+# ---- Eurozone block with subscore + sparklines ----
+if "eurozone" in CFG["indicators"]:
+    ez_labels = CFG["indicators"]["eurozone"]
+    ez_items = [
+        ("OECD Euro Area CLI (amplitude adj., SA)", "negative_is_risky", float(CFG["weights"]["eurozone"]["cli"])),
+        ("ECB USD per EUR (monthly)", "positive_is_risky", float(CFG["weights"]["eurozone"]["usdeur"])),
+    ]
+    ez_scores = []
+    for lbl, direction, w in ez_items:
+        path = DATA_DIR / series_map[lbl]
+        if not path.exists():
+            continue
+        s = load_series(path, weekly_resample=True)
+        if s.empty:
+            continue
+        zs = zscore(s)
+        z_last = zs.iloc[-1] if len(zs) else np.nan
+        if np.isnan(z_last):
+            continue
+        score = -float(z_last) if direction == "negative_is_risky" else float(z_last)
+        ez_scores.append((score, w))
+
+    ez_sub = np.nan
+    if ez_scores:
+        tw = sum(w for _, w in ez_scores)
+        if tw > 0:
+            ez_sub = sum(sc*w for sc, w in ez_scores) / tw
+
+    ez_level = "OK"
+    if not np.isnan(ez_sub):
+        if ez_sub >= TH_CHINA_ALERT:   # reuse thresholds (watch/alert)
+            ez_level = "ALERT"
+        elif ez_sub >= TH_CHINA_WATCH:
+            ez_level = "WATCH"
+
+    html.append("<h3>Eurozone</h3>")
+    badge_ez = "<span class='badge ok'>OK</span>"
+    if ez_level == "WATCH": badge_ez = "<span class='badge watch'>WATCH</span>"
+    if ez_level == "ALERT": badge_ez = "<span class='badge alert'>ALERT</span>"
+    ez_str = "-" if np.isnan(ez_sub) else f"{ez_sub:.2f}"
+    html.append(f"<p><b>Eurozone Subscore:</b> {ez_str} {badge_ez}</p>")
+
+    html.append("<table><tr>"
+                "<th>Indicator</th><th>Last Date</th><th>Last Value</th>"
+                "<th>Z-Score</th><th>Sparkline (52w)</th>"
+                "</tr>")
+    for lbl in ez_labels:
+        rows = [r for r in display_rows if r[0] == lbl]
+        if not rows:
+            continue
+        r = rows[0]
+        svg = spark_from_file(series_map[lbl], tail_points=52)
+        html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{svg}</td></tr>")
+    html.append("</table>")
+
 
 html.append(
     "<p class='small'>Notes: Contributions use the same direction rules as the composite: "
