@@ -89,6 +89,15 @@ jobs:
           echo "---- Show first 5 lines of ECB CSV ----"
           head -n 5 data/eur_usd_ecb.csv || true
 
+          
+      - name: Download OECD China CLI (MEI_CLI LOLITOAA.CHN.M)
+        run: |
+          set -e
+          python pipeline/update_oecd_cli.py
+          echo "---- Show first 5 lines of OECD China CLI CSV ----"
+          head -n 5 data/china_cli_oecd.csv || true
+
+
       - name: Generate dashboard HTML
         run: |
           set -euxo pipefail
