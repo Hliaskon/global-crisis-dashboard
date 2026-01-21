@@ -14,6 +14,11 @@ weights:
   japan:
     cli: 0.60
     usdjpy: 0.40
+    
+  eurozone:
+    cli: 0.60          # OECD Euro Area CLI
+    usdeur: 0.40       # USD per EUR (ECB)
+
 
 
 indicators:
@@ -29,5 +34,9 @@ indicators:
   japan:
     - "OECD Japan CLI (amplitude adj., SA)"
     - "USD/JPY (derived, ECB monthly)"
-
+   
+  eurozone:
+    - "OECD Euro Area CLI (amplitude adj., SA)"
+    - "ECB USD per EUR (monthly)"
+ 
 
