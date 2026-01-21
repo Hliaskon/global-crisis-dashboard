@@ -66,6 +66,20 @@ jobs:
           echo "---- Show pipeline/update_ecb_data.py ----"
           sed -n '1,200p' pipeline/update_ecb_data.py || true
 
+      
+      - name: Compile Python pipeline scripts (preflight)
+        run: |
+          set -euxo pipefail
+          python -m py_compile \
+            pipeline/update_ecb_data.py \
+            pipeline/update_oecd_cli.py \
+            pipeline/update_oecd_cli_japan.py \
+            pipeline/update_oecd_cli_ea.py \
+            pipeline/update_oecd_cli_uk.py \
+            pipeline/update_oecd_cli_canada.py \
+            pipeline/compute_dashboard.py
+    
+
       - name: Download FRED data
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
@@ -124,6 +138,23 @@ jobs:
           python pipeline/update_oecd_cli_ea.py
           echo "---- Show first 5 lines of OECD EA CLI CSV ----"
           head -n 5 data/euroarea_cli_oecd.csv || true
+
+      
+      - name: Download OECD UK CLI (MEI_CLI LOLITOAA.GBR.M)
+        run: |
+          set -e
+          python pipeline/update_oecd_cli_uk.py
+          echo "---- Show first 5 lines of OECD UK CLI CSV ----"
+          head -n 5 data/uk_cli_oecd.csv || true
+
+      - name: Download OECD Canada CLI (MEI_CLI LOLITOAA.CAN.M)
+        run: |
+          set -e
+          python pipeline/update_oecd_cli_canada.py
+          echo "---- Show first 5 lines of OECD Canada CLI CSV ----"
+          head -n 5 data/canada_cli_oecd.csv || true
+
+          
 
       - name: Fetch previous state.json (if exists)
         run: |
