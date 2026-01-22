@@ -110,3 +110,52 @@ countries:
     cli_label: "OECD Russia CLI (amplitude adj., SA)"
     fx_label:  "USD/RUB (derived, ECB)"
     fx_source: usd_rub_ecb.csv
+    
+# ---------- BREADTH (limits over-weighting of many CLIs) ----------
+breadth:
+  enable: true
+  total_weight: 0.12            # 12% total allocated to breadth
+  share_level_vs_mom: [0.5, 0.5]# 6% to level breadth + 6% to momentum breadth
+  cli_level_threshold: 100.0    # OECD CLI below 100 = below trend
+
+# ---------- ADDITIONAL INDICATORS (safe: skipped if file not found) ----------
+# We will create these CSVs in next steps; until then they are ignored.
+indicators_custom:
+  # Credit / Stress
+  - { label: "US IG OAS (bps)",           file: "ig_oas.csv",          bad_when: high, weight: 0.08 }
+  - { label: "Chicago NFCI (std)",        file: "chicago_nfci.csv",    bad_when: high, weight: 0.06 }   # (optional; we may add later)
+  # Commodities
+  - { label: "Brent Spot (USD/bbl)",      file: "brent_spot_fred.csv", bad_when: high, weight: 0.06 }   # you already added Brent updater earlier
+  - { label: "Gold (USD/oz, IMF)",        file: "gold_imf.csv",        bad_when: high, weight: 0.05 }   # to add later
+  - { label: "Copper (USD/ton, IMF)",     file: "copper_imf.csv",      bad_when: low,  weight: 0.05 }   # to add later
+  - { label: "Baltic Dry Index",          file: "bdi_stooq.csv",       bad_when: low,  weight: 0.04 }   # to add later
+  # Inflation expectations (US)
+  - { label: "US 10y Breakeven",          file: "t10yie.csv",          bad_when: high, weight: 0.05 }   # to add later
+
+# ---------- OPPORTUNITY UNIVERSE (for later HTML cards & alerts) ----------
+universe:
+  equities:
+    US:  [ "SPY", "VTV", "QUAL" ]
+    JP:  [ "EWJ" ]
+    DE:  [ "EWG" ]
+    FR:  [ "EWQ" ]
+    IT:  [ "EWI" ]
+    UK:  [ "EWU" ]
+    CA:  [ "EWC" ]
+    IN:  [ "INDA" ]
+    RU:  [ "IMOEX.ME" ]  # index-only view; trading constraints apply
+  bonds_nominal:
+    US:  [ "IEF", "TLT" ]
+    JP:  [ ]
+    DE:  [ ]
+    FR:  [ ]
+    IT:  [ ]
+    UK:  [ ]
+    CA:  [ "XGB.TO" ]
+    IN:  [ ]
+    RU:  [ ]
+  commodities:
+    Global: [ "GLD", "USO", "DBC" ]
+  fx_hedges:
+    Global: [ "UUP", "FXY" ]
+
