@@ -142,6 +142,17 @@ jobs:
           echo "---- Preview BDI (head) ----"
           head -n 5 data/bdi_stooq.csv || true
 
+          
+      - name: Download Gold & Copper (Stooq)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_imf_commodities.py
+          echo "---- Preview Gold (head) ----"
+          head -n 5 data/gold_imf.csv || true
+          echo "---- Preview Copper (head) ----"
+          head -n 5 data/copper_imf.csv || true
+
+
         
       - name: Download Brent (FRED)
         run: |
