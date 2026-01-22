@@ -282,6 +282,108 @@ jobs:
           echo "---- Preview top of index.html ----"
           head -n 40 output/index.html || true
 
+
+                
+      # --- NEW: open/update a single 'opportunity' issue with flips ---
+      - name: Create/Update Opportunity Alerts (flips)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+      
+            function readJSON(p) {
+              try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+              catch (e) { return null; }
+            }
+      
+            const cur = readJSON('output/opportunities.json');
+            const prev = readJSON('output/prev_opportunities.json');
+      
+            if (!cur || !Array.isArray(cur.countries)) {
+              core.info('opportunities.json missing or invalid; skipping opportunity alerts.');
+              return;
+            }
+      
+            const prevByCountry = {};
+            if (prev && Array.isArray(prev.countries)) {
+              for (const c of prev.countries) prevByCountry[c.country] = c;
+            }
+      
+            const SLEEVES = ['equities','bonds','commods','fx'];
+      
+            const flips = [];
+            for (const c of cur.countries) {
+              const prevC = prevByCountry[c.country] || {};
+              for (const s of SLEEVES) {
+                const curAct  = (c[s] && c[s].action)  ? String(c[s].action)  : '-';
+                const prevAct = (prevC[s] && prevC[s].action) ? String(prevC[s].action) : '-';
+                if (curAct !== prevAct) {
+                  flips.push({
+                    country: c.country,
+                    sleeve: s,
+                    from: prevAct,
+                    to: curAct,
+                    note: (c[s] && c[s].note) ? c[s].note.replace(/\n/g,' ') : ''
+                  });
+                }
+              }
+            }
+      
+            if (flips.length === 0) {
+              core.info('No opportunity flips detected; skipping issue update.');
+              return;
+            }
+      
+            const generated = cur.generated_utc || '(no timestamp)';
+            const [owner, repo] = (process.env.GITHUB_REPOSITORY || '').split('/');
+            const dashboardUrl = `https://${owner}.github.io/${repo}/`;
+      
+            const lines = [];
+            lines.push(`**Generated (UTC):** ${generated}`);
+            lines.push('');
+            lines.push('### Opportunity flips since previous run');
+            lines.push('');
+            lines.push('| Country | Sleeve | From | → | To | Note |');
+            lines.push('|---|---|---:|:---:|:---|---|');
+            for (const f of flips) {
+              lines.push(`| ${f.country} | ${f.sleeve} | ${f.from} | → | **${f.to}** | ${f.note} |`);
+            }
+            lines.push('');
+            lines.push(`Dashboard: ${dashboardUrl}`);
+      
+            const title = `📈 Opportunity Alerts: ${flips.length} flip(s) (${generated})`;
+      
+            async function ensureLabel(name, color, description) {
+              try { await github.rest.issues.getLabel({ owner, repo, name }); }
+              catch {
+                try {
+                  await github.rest.issues.createLabel({ owner, repo, name, color, description });
+                  core.info(`Created label: ${name}`);
+                } catch (e) {
+                  core.warning(`Could not create label "${name}": ${String(e)}`);
+                }
+              }
+            }
+            await ensureLabel('opportunity', '0E8A16', 'Auto-created label for Opportunity flips');
+      
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'opportunity'
+            });
+      
+            const body = lines.join('\n');
+      
+            if (issues.length > 0) {
+              const issue = issues[0];
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, title, body });
+              core.info(`Updated existing opportunity issue #${issue.number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner, repo, title, body, labels: ['opportunity']
+              });
+              core.info(`Created opportunity issue #${issue.number}`);
+            }
+
+
       - name: Upload data artifact
         uses: actions/upload-artifact@v4
         with:
