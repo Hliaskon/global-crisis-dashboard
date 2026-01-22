@@ -126,6 +126,15 @@ jobs:
           echo "---- Preview IG OAS (head) ----"
           head -n 5 data/ig_oas.csv || true
 
+          
+      - name: Download US 10y Breakevens (FRED T10YIE)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_breakevens_fred.py
+          echo "---- Preview T10YIE (head) ----"
+          head -n 5 data/t10yie.csv || true
+
+
         
       - name: Download Brent (FRED)
         run: |
