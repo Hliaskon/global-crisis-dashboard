@@ -515,13 +515,20 @@ bdi_d3    = _last_delta(bdi_z)    if len(bdi_z)    else np.nan
 gold_d3   = _last_delta(gold_z)   if len(gold_z)   else np.nan
 copper_d3 = _last_delta(copper_z) if len(copper_z) else np.nan
 
-def _decide_equities(country_risk: float | None, cli_d3: float) -> tuple[str,str]:
-    # BUY when regime not RED and local cycle is below-trend but improving.
+
+def _decide_equities(country_risk: float | None, cli_d3: float, eq_d3: float) -> tuple[str, str]:
+    """
+    Equity action logic:
+      - AVOID if macro detector RED or local subscore (risk) is high.
+      - BUY if equity momentum > 0 and macro not hostile; CLI momentum not negative.
+      - Otherwise WATCH.
+    """
     if det_level == "RED" or (country_risk is not None and country_risk >= 0.8):
         return "AVOID", "Macro RED or high local risk"
-    if (country_risk is not None and country_risk <= -0.2) and (not np.isnan(cli_d3) and cli_d3 > 0):
-        return "BUY", "Cycle improving & below trend"
+    if (not np.isnan(eq_d3) and eq_d3 > 0) and (country_risk is None or country_risk <= 0.2) and (np.isnan(cli_d3) or cli_d3 >= 0):
+        return "BUY", "Equity trend up; macro not hostile"
     return "WATCH", "Neutral/mixed"
+
 
 def _decide_bonds(country_risk: float | None) -> tuple[str,str]:
     # Add duration in RED or when local risk high; avoid when cycle strong.
@@ -544,6 +551,11 @@ def _decide_fx(fx_d3: float) -> tuple[str,str]:
     if det_level == "RED" or (not np.isnan(fx_d3) and fx_d3 > 0):
         return "USD_HEDGE", "USD strength / hedge"
     return "LOCAL", "No FX hedge needed"
+  
+def _eq_file_for_country(name: str) -> str:
+    """Return data file name for the country's equity index, following eq_<safe>.csv convention."""
+    safe = name.lower().replace(" ", "_")
+    return f"eq_{safe}.csv"
 
 opportunities = {"generated_utc": now, "detector": det_level, "countries": []}
 
@@ -561,21 +573,33 @@ for cs in country_states:
     cli_d3 = _last_delta(z_cli) if len(z_cli) else np.nan
     fx_d3  = _last_delta(z_fx)  if len(z_fx)  else np.nan
 
-    eq_act, eq_note = _decide_equities(subscore, cli_d3)
+  
+    # Equity index for this country (safe: missing -> neutral)
+    eq_file = _eq_file_for_country(name)
+    s_eq = _try_series(eq_file)
+    z_eq = roll_z(s_eq) if len(s_eq) else pd.Series(dtype=float)
+    eq_d3 = _last_delta(z_eq) if len(z_eq) else np.nan
+
+
+    eq_act, eq_note = _decide_equities(subscore, cli_d3, eq_d3)
     bd_act, bd_note = _decide_bonds(subscore)
     cm_act, cm_note = _decide_commodities()
     fx_act, fx_note = _decide_fx(fx_d3)
+
 
     opportunities["countries"].append({
         "country": name,
         "subscore": None if subscore is None else round(float(subscore), 3),
         "cli_delta_3m": None if np.isnan(cli_d3) else round(float(cli_d3), 3),
         "fx_delta_3m":  None if np.isnan(fx_d3)  else round(float(fx_d3), 3),
+        "equity_delta_3m": None if np.isnan(eq_d3) else round(float(eq_d3), 3),
+        "equity_file": eq_file,
         "equities": {"action": eq_act, "note": eq_note},
         "bonds":    {"action": bd_act, "note": bd_note},
         "commods":  {"action": cm_act, "note": cm_note},
         "fx":       {"action": fx_act, "note": fx_note}
     })
+
 
 # Persist opportunities for downstream (alerts/backtests/UI)
 (OUT_DIR / "opportunities.json").write_text(json.dumps(opportunities, indent=2), encoding="utf-8")
