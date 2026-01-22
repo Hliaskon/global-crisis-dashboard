@@ -118,6 +118,14 @@ jobs:
           python pipeline/update_oecd_cli.py RUS russia_cli_oecd.csv
           head -n 5 data/russia_cli_oecd.csv || true
 
+          
+      - name: Download US IG OAS (FRED)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_ig_oas_fred.py
+          echo "---- Preview IG OAS (head) ----"
+          head -n 5 data/ig_oas.csv || true
+
         
       - name: Download Brent (FRED)
         run: |
