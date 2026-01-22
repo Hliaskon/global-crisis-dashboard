@@ -492,6 +492,10 @@ for (lbl, z_last, mom_txt, risk_last, w, w_contrib) in contrib_rows:
 # Opportunity Engine (per country) — builds opportunities.json
 # ---------------------------------------------------------------------
 
+
+from datetime import datetime  # (already imported at top in many versions; harmless if duplicated)
+now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
 def _last_delta(z: pd.Series, window: int = DELTA3M_W) -> float:
     """Return last 3M change of a z-scored series; NaN if not enough data."""
     if z is None or len(z) < window + 1:
@@ -556,6 +560,7 @@ def _eq_file_for_country(name: str) -> str:
     """Return data file name for the country's equity index, following eq_<safe>.csv convention."""
     safe = name.lower().replace(" ", "_")
     return f"eq_{safe}.csv"
+
 
 opportunities = {"generated_utc": now, "detector": det_level, "countries": []}
 
