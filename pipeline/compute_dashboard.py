@@ -487,6 +487,102 @@ for (lbl, z_last, mom_txt, risk_last, w, w_contrib) in contrib_rows:
     share = "-" if abs_sum == 0 or w_contrib is None or np.isnan(w_contrib) else f"{(abs(w_contrib)/abs_sum)*100:.0f}%"
     contrib_rows_out.append((lbl, z_last, mom_txt, risk_last, w, w_contrib, share))
 
+
+# ---------------------------------------------------------------------
+# Opportunity Engine (per country) — builds opportunities.json
+# ---------------------------------------------------------------------
+
+def _last_delta(z: pd.Series, window: int = DELTA3M_W) -> float:
+    """Return last 3M change of a z-scored series; NaN if not enough data."""
+    if z is None or len(z) < window + 1:
+        return np.nan
+    return float(z.iloc[-1] - z.iloc[-window])
+
+def _try_series(file_name: str) -> pd.Series:
+    s = load_series(DATA_DIR / file_name, weekly_resample=True)
+    return s if isinstance(s, pd.Series) else pd.Series(dtype=float)
+
+# Optional global commodity proxies (added in Steps 4–5)
+bdi    = _try_series("bdi_stooq.csv")
+gold   = _try_series("gold_imf.csv")
+copper = _try_series("copper_imf.csv")
+
+bdi_z    = roll_z(bdi)    if len(bdi)    else pd.Series(dtype=float)
+gold_z   = roll_z(gold)   if len(gold)   else pd.Series(dtype=float)
+copper_z = roll_z(copper) if len(copper) else pd.Series(dtype=float)
+
+bdi_d3    = _last_delta(bdi_z)    if len(bdi_z)    else np.nan
+gold_d3   = _last_delta(gold_z)   if len(gold_z)   else np.nan
+copper_d3 = _last_delta(copper_z) if len(copper_z) else np.nan
+
+def _decide_equities(country_risk: float | None, cli_d3: float) -> tuple[str,str]:
+    # BUY when regime not RED and local cycle is below-trend but improving.
+    if det_level == "RED" or (country_risk is not None and country_risk >= 0.8):
+        return "AVOID", "Macro RED or high local risk"
+    if (country_risk is not None and country_risk <= -0.2) and (not np.isnan(cli_d3) and cli_d3 > 0):
+        return "BUY", "Cycle improving & below trend"
+    return "WATCH", "Neutral/mixed"
+
+def _decide_bonds(country_risk: float | None) -> tuple[str,str]:
+    # Add duration in RED or when local risk high; avoid when cycle strong.
+    if det_level == "RED" or (country_risk is not None and country_risk >= 0.6):
+        return "BUY", "Add duration in stress"
+    if country_risk is not None and country_risk <= -0.4:
+        return "AVOID", "Prefer risk assets when cycle is strong"
+    return "WATCH", "Neutral duration"
+
+def _decide_commodities() -> tuple[str,str]:
+    # GOLD hedge if RED or gold momentum +; cyclical beta if BDI & Copper momentum +.
+    if det_level == "RED" or (not np.isnan(gold_d3) and gold_d3 > 0.2):
+        return "GOLD_HEDGE", "Risk-off or inflation hedge"
+    if (not np.isnan(bdi_d3) and bdi_d3 > 0) and (not np.isnan(copper_d3) and copper_d3 > 0):
+        return "CYCLICAL_BETA", "BDI & Copper momentum positive"
+    return "NEUTRAL", "No clear commodity tilt"
+
+def _decide_fx(fx_d3: float) -> tuple[str,str]:
+    # USD hedge in RED or when USD/LCY is rising (USD strength).
+    if det_level == "RED" or (not np.isnan(fx_d3) and fx_d3 > 0):
+        return "USD_HEDGE", "USD strength / hedge"
+    return "LOCAL", "No FX hedge needed"
+
+opportunities = {"generated_utc": now, "detector": det_level, "countries": []}
+
+for cs in country_states:
+    name       = cs["name"]
+    subscore   = cs["subscore"]  # positive => higher risk
+    cli_file   = cs["cli_file"]
+    fx_file    = cs["fx_file"]
+
+    s_cli = load_series(DATA_DIR / cli_file, weekly_resample=True)
+    s_fx  = load_series(DATA_DIR / fx_file,  weekly_resample=True)
+    z_cli = roll_z(s_cli)
+    z_fx  = roll_z(s_fx)
+
+    cli_d3 = _last_delta(z_cli) if len(z_cli) else np.nan
+    fx_d3  = _last_delta(z_fx)  if len(z_fx)  else np.nan
+
+    eq_act, eq_note = _decide_equities(subscore, cli_d3)
+    bd_act, bd_note = _decide_bonds(subscore)
+    cm_act, cm_note = _decide_commodities()
+    fx_act, fx_note = _decide_fx(fx_d3)
+
+    opportunities["countries"].append({
+        "country": name,
+        "subscore": None if subscore is None else round(float(subscore), 3),
+        "cli_delta_3m": None if np.isnan(cli_d3) else round(float(cli_d3), 3),
+        "fx_delta_3m":  None if np.isnan(fx_d3)  else round(float(fx_d3), 3),
+        "equities": {"action": eq_act, "note": eq_note},
+        "bonds":    {"action": bd_act, "note": bd_note},
+        "commods":  {"action": cm_act, "note": cm_note},
+        "fx":       {"action": fx_act, "note": fx_note}
+    })
+
+# Persist opportunities for downstream (alerts/backtests/UI)
+(OUT_DIR / "opportunities.json").write_text(json.dumps(opportunities, indent=2), encoding="utf-8")
+print("✅ Wrote output/opportunities.json")
+
+
+
 # ----------------------------- HTML -----------------------------------
 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 html = []
@@ -636,6 +732,32 @@ html.append(
     "risk_score = +Z if bad_when_high, −Z if bad_when_low. Composite is a normalized sum of weighted risk scores. "
     "Momentum uses 3‑month Δ in Z. Detector adds persistence to avoid whipsaws. Tune parameters in <code>config.yaml</code>.</p>"
 )
+
+
+# ---- Opportunities section (if file exists) ----
+try:
+    opp = json.loads((OUT_DIR / "opportunities.json").read_text(encoding="utf-8"))
+    html.append("<h3 class='section'>Opportunities (per country)</h3>")
+    html.append("<table><tr><th>Country</th><th>Equities</th><th>Bonds</th><th>Commodities</th><th>FX</th></tr>")
+    for item in opp.get("countries", []):
+        cn = item.get("country", "-")
+        eq = item.get("equities", {}).get("action", "-")
+        bd = item.get("bonds",    {}).get("action", "-")
+        cm = item.get("commods",  {}).get("action", "-")
+        fx = item.get("fx",       {}).get("action", "-")
+        html.append(
+            "<tr>"
+            f"<td>{cn}</td>"
+            f"<td>{eq}</td>"
+            f"<td>{bd}</td>"
+            f"<td>{cm}</td>"
+            f"<td>{fx}</td>"
+            "</tr>"
+        )
+    html.append("</table>")
+except Exception as _e:
+    # Silent: keep HTML rendering robust even if opportunities.json missing
+    pass
 
 html.append("</body></html>")
 
