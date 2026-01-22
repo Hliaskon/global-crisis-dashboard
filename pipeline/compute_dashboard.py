@@ -1,10 +1,12 @@
+
 # -*- coding: utf-8 -*-
 """
 Global Crisis Dashboard — risk-normalized composite with breadth & momentum filters
-Implements proposals A–F:
+
+Implements your proposals:
   A) risk_score = +Z (bad_when_high) / -Z (bad_when_low)
-  B) Weights normalized to 100%; reduces multiple CLIs via breadth
-  C) Trend/acceleration crisis detector with persistence
+  B) Weights normalized to 100%; reduce CLI redundancy via breadth metrics
+  C) Trend/acceleration detector with persistence (YELLOW/RED)
   D) Extensible indicator registry via config.yaml
   E) Smoothing (3M MA) + standard/robust rolling Z
   F) Persist composite history for backtesting
@@ -47,6 +49,7 @@ DEFAULTS = {
         "red_delta": 0.7,
         "red_level": 1.0
     },
+    # For the “Key Indicators (US + ECB)” summary table (informational)
     "indicators_table_us_ecb": [
         "US Yield Curve 10Y–3M (bps)",
         "US Unemployment Rate (%)",
@@ -59,18 +62,20 @@ DEFAULTS = {
         "USD/INR (derived, ECB)",
         "USD/RUB (derived, ECB)"
     ],
+    # Breadth metrics from all country CLIs
     "breadth": {
         "enable": True,
-        "total_weight": 0.12,           # 12% total
+        "total_weight": 0.12,           # 12% total (e.g., 6% level + 6% momentum)
         "share_level_vs_mom": [0.5, 0.5],
         "cli_level_threshold": 100.0
     },
-    # Core indicators (add more via config.yaml -> indicators_custom)
+    # Core indicators (you can extend via config.yaml -> indicators_custom)
     "indicators_core": [
         {"label": "US HY OAS (bps)",             "file": "hy_credit_spread.csv",   "bad_when": "high", "weight": 0.25},
         {"label": "US Yield Curve 10Y–3M (bps)", "file": "yield_curve_10y_3m.csv", "bad_when": "low",  "weight": 0.10},
         {"label": "US Unemployment Rate (%)",    "file": "unemployment_rate.csv",  "bad_when": "high", "weight": 0.10}
     ],
+    # Country definitions (used both for country cards and CLI breadth)
     "countries": []
 }
 
@@ -223,7 +228,7 @@ for label, fname in SERIES_MAP_KEYS.items():
     display_rows.append((label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{float(last_z):+.2f}"))
 
 # ------------------ Country subscores + CLI breadth -------------------
-country_states = []
+country_states = []   # each: dict with computed stats for HTML + state.json
 seen_cli_fp, seen_fx_fp = {}, {}
 cli_level_flags, cli_mom_flags = [], []
 
@@ -305,6 +310,18 @@ for c in CFG["countries"]:
     except Exception as e:
         print(f"⚠️ Breadth calc failed for {name}: {e}")
 
+    # Prepare per-country stats for HTML (avoid fragile lookups)
+    def last_stats(s: pd.Series, z: pd.Series):
+        if s is None or len(s) == 0:
+            return {"date": "-", "val": "-", "z": "-"}
+        d = s.index[-1].strftime("%Y-%m-%d")
+        v = f"{float(s.iloc[-1]):.2f}"
+        if z is None or len(z) == 0 or np.isnan(z.iloc[-1]):
+            zs = "-"
+        else:
+            zs = f"{float(z.iloc[-1]):+.2f}"
+        return {"date": d, "val": v, "z": zs}
+
     country_states.append({
         "name": name,
         "level": lvl,
@@ -312,7 +329,11 @@ for c in CFG["countries"]:
         "cli_label": cli_label,
         "fx_label":  fx_label,
         "cli_file":  f"{safe}_cli_oecd.csv",
-        "fx_file":   fx_file
+        "fx_file":   fx_file,
+        "cli_stats": last_stats(s_cli, z_cli),
+        "fx_stats":  last_stats(s_fx,  z_fx),
+        "cli_spark": "" if s_cli is None or len(s_cli) == 0 else sparkline_svg(s_cli.tail(52).tolist()),
+        "fx_spark":  "" if s_fx  is None or len(s_fx)  == 0 else sparkline_svg(s_fx.tail(52).tolist())
     })
 
 # ------------------------ Indicator registry --------------------------
@@ -466,16 +487,6 @@ for (lbl, z_last, mom_txt, risk_last, w, w_contrib) in contrib_rows:
     share = "-" if abs_sum == 0 or w_contrib is None or np.isnan(w_contrib) else f"{(abs(w_contrib)/abs_sum)*100:.0f}%"
     contrib_rows_out.append((lbl, z_last, mom_txt, risk_last, w, w_contrib, share))
 
-# Previous state for Δ (optional)
-prev_state_path = OUT_DIR / "prev_state.json"
-prev_contrib = {}
-if prev_state_path.exists():
-    try:
-        prev_state = json.loads(prev_state_path.read_text(encoding="utf-8"))
-        prev_contrib = prev_state.get("contributions", {}) or {}
-    except Exception as e:
-        print(f"⚠️ Could not parse prev_state.json: {e}")
-
 # ----------------------------- HTML -----------------------------------
 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 html = []
@@ -568,7 +579,7 @@ else:
     html.append("<tr><td colspan='7'>No contributors available.</td></tr>")
 html.append("</table>")
 
-# Key indicators
+# Key indicators (US + ECB)
 html.append("<h3 class='section'>Key Indicators (US + ECB)</h3>")
 html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z‑Score</th></tr>")
 for r in display_rows:
@@ -576,13 +587,9 @@ for r in display_rows:
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td class='num'>{r[2]}</td><td class='num'>{r[3]}</td></tr>")
 html.append("</table>")
 
-# Country cards
-def spark_from_file(file_name: str, tail_points: int = 52) -> str:
-    path = DATA_DIR / file_name
-    s = load_series(path, weekly_resample=True)
-    if s.empty:
-        return ""
-    return sparkline_svg(s.tail(tail_points).tolist())
+# Country cards (now using precomputed per-country stats; fixed CSV links)
+html.append("<h3 class='section'>Country Views</h3>")
+html.append("<div class='small'>Each subscore = weighted sum of (−Z(CLI), +Z(FX)).</div>")
 
 for c in country_states:
     name = c["name"]
@@ -591,39 +598,43 @@ for c in country_states:
     badge_cn = "<span class='badge ok'>OK</span>" if lvl == "OK" else ("<span class='badge watch'>WATCH</span>" if lvl == "WATCH" else "<span class='badge alert'>ALERT</span>")
     sub_str = "-" if sub is None else f"{sub:.2f}"
 
-    cli_row = next((r for r in display_rows if r[0] == c["cli_label"]), None)
-    fx_row  = next((r for r in display_rows if r[0] == c["fx_label"]),  None)
-
     html.append("<div class='country'>")
     html.append(f"<h3>{name}</h3>")
     html.append(f"<p class='subscore'><b>Subscore:</b> {sub_str} {badge_cn}</p>")
     html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z‑Score</th><th>Sparkline (52w)</th><th>Download</th></tr>")
 
-    if cli_row:
-        cli_svg = spark_from_file(c["cli_file"])
-        html.append(
-            f"<tr><td>{cli_row[0]}</td><td>{cli_row[1]}</td><td class='num'>{cli_row[2]}</td><td class='num'>{cli_row[3]}</td>"
-            f"<td>{cli_svg}</td><td>data/{c[CSV</a></td></tr>"
-        )
-    else:
-        html.append(f"<tr><td>{c['cli_label']}</td><td>-</td><td>-</td><td>-</td><td></td><td class='dim'>data unavailable</td></tr>")
+    # CLI row
+    cli_stats = c["cli_stats"]
+    cli_svg   = c["cli_spark"]
+    html.append(
+        f"<tr><td>{c['cli_label']}</td>"
+        f"<td>{cli_stats['date']}</td>"
+        f"<td class='num'>{cli_stats['val']}</td>"
+        f"<td class='num'>{cli_stats['z']}</td>"
+        f"<td>{cli_svg}</td>"
+        f"<td><a href='data/{c['cli_file']}'>CSV</a></td></tr>"
+    )
 
-    if fx_row:
-        fx_svg = spark_from_file(c["fx_file"])
-        html.append(
-            f"<tr><td>{fx_row[0]}</td><td>{fx_row[1]}</td><td class='num'>{fx_row[2]}</td><td class='num'>{fx_row[3]}</td>"
-            f"<td>{fx_svg}</td><td>data/{c[CSV</a></td></tr>"
-        )
-    else:
-        html.append(f"<tr><td>{c['fx_label']}</td><td>-</td><td>-</td><td>-</td><td></td><td class='dim'>data unavailable</td></tr>")
+    # FX row
+    fx_stats = c["fx_stats"]
+    fx_svg   = c["fx_spark"]
+    html.append(
+        f"<tr><td>{c['fx_label']}</td>"
+        f"<td>{fx_stats['date']}</td>"
+        f"<td class='num'>{fx_stats['val']}</td>"
+        f"<td class='num'>{fx_stats['z']}</td>"
+        f"<td>{fx_svg}</td>"
+        f"<td><a href='data/{c['fx_file']}'>CSV</a></td></tr>"
+    )
 
     html.append("</table>")
     html.append("</div>")
 
+# Footnote
 html.append(
-    "<p class='small'>Notes: Every indicator is smoothed (3M MA) then Z‑scored on a rolling window; "
-    "risk_score = +Z if bad_when_high, −Z if bad_when_low. Composite is the normalized sum of weighted risk scores. "
-    "‘Momentum’ uses 3‑month Δ in Z. Detector uses persistence to avoid whipsaws. Tune in <code>config.yaml</code>.</p>"
+    "<p class='small'>Notes: Each indicator is smoothed (3M MA) then Z‑scored on a rolling window; "
+    "risk_score = +Z if bad_when_high, −Z if bad_when_low. Composite is a normalized sum of weighted risk scores. "
+    "Momentum uses 3‑month Δ in Z. Detector adds persistence to avoid whipsaws. Tune parameters in <code>config.yaml</code>.</p>"
 )
 
 html.append("</body></html>")
@@ -635,6 +646,7 @@ print("✅ Wrote output/index.html")
 for f in DATA_DIR.glob("*.csv"):
     shutil.copy2(f, OUT_DIR / "data" / f.name)
 
+# Persist snapshot state
 state = {
     "generated_utc": now,
     "composite": None if np.isnan(composite) else round(float(composite), 3),
