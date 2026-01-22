@@ -1,11 +1,47 @@
 windows:
   zscore_lookback_weeks: 260   # ~5 years of weekly points
+  smoothing_ma_weeks: 13       # 3M MA before Z
+  three_month_weeks: 13
+  persistence_weeks: 9         # need ~2 months of weekly confirmations
+
+
+zscore:
+  method: standard             # or: robust
+
 
 thresholds:
   composite_watch: 1.0
   composite_alert: 2.0
-  country_watch: 1.0
-  country_alert: 2.0
+  yellow_delta: 0.3
+  red_delta: 0.7
+  red_level: 1.0
+
+breadth:
+  enable: true
+  total_weight: 0.12           # 12% total to breadth (not 64%)
+  share_level_vs_mom: [0.5, 0.5]
+  cli_level_threshold: 100.0
+
+# Core indicators (you can tweak their weights; script normalizes to 100% anyway)
+indicators_core:
+  - { label: "US HY OAS (bps)",            file: "hy_credit_spread.csv",   bad_when: high, weight: 0.25 }
+  - { label: "US Yield Curve 10Y–3M (bps)",file: "yield_curve_10y_3m.csv", bad_when: low,  weight: 0.10 }
+  - { label: "US Unemployment Rate (%)",   file: "unemployment_rate.csv",  bad_when: high, weight: 0.10 }
+
+# Add more (D) as you onboard data files:
+# indicators_custom:
+#   - { label: "Brent spot (USD/bbl)", file: "brent_spot_fred.csv", bad_when: high, weight: 0.10 }
+#   - { label: "S&P 500 (price)",      file: "sp500_fred.csv",      bad_when: low,  weight: 0.10 }
+#   - { label: "VIX",                  file: "vix.csv",             bad_when: high, weight: 0.08 }
+#   - { label: "MOVE",                 file: "move.csv",            bad_when: high, weight: 0.08 }
+#   - { label: "Copper/Gold ratio",    file: "copper_gold.csv",     bad_when: low,  weight: 0.08 }
+#   - { label: "ISM New Orders - Inventories", file: "ism_no_minus_inv.csv", bad_when: low, weight: 0.10 }
+
+# Keep your existing 'countries:' section (used for country cards and CLI breadth)
+# countries:
+#   - { name: "Germany", cli_label: "OECD Germany CLI (amplitude adj., SA)", fx_label: "USD per EUR (ECB)", fx_source: "eur_usd_ecb.csv" }
+#   ...
+
 
 # Default weights per country (CLI vs FX)
 weights:
