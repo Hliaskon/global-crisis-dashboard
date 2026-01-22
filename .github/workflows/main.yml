@@ -1,4 +1,3 @@
-
 name: Crisis Dashboard Automation
 
 on:
@@ -153,6 +152,54 @@ jobs:
           head -n 5 data/copper_imf.csv || true
 
 
+      # === Country equity indices (Stooq) ===
+      - name: Download Equity Index - Japan
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^n225,^nkx" --out eq_japan.csv
+          head -n 5 data/eq_japan.csv || true
+      
+      - name: Download Equity Index - Germany
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^dax,dax" --out eq_germany.csv
+          head -n 5 data/eq_germany.csv || true
+      
+      - name: Download Equity Index - France
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^cac,cac40,^px1" --out eq_france.csv
+          head -n 5 data/eq_france.csv || true
+      
+      - name: Download Equity Index - Italy
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^ftsemib,^mib" --out eq_italy.csv
+          head -n 5 data/eq_italy.csv || true
+      
+      - name: Download Equity Index - United Kingdom
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^ftse,ftse" --out eq_united_kingdom.csv
+          head -n 5 data/eq_united_kingdom.csv || true
+      
+      - name: Download Equity Index - Canada
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^tsx,tsx" --out eq_canada.csv
+          head -n 5 data/eq_canada.csv || true
+      
+      - name: Download Equity Index - India
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^nifty,^nse50" --out eq_india.csv
+          head -n 5 data/eq_india.csv || true
+      
+      - name: Download Equity Index - Russia
+        run: |
+          set -euxo pipefail
+          python pipeline/update_equity_index_stooq.py --symbols "^imoex,imoex" --out eq_russia.csv
+          head -n 5 data/eq_russia.csv || true
         
       - name: Download Brent (FRED)
         run: |
