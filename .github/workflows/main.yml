@@ -259,13 +259,19 @@ jobs:
       #     python pipeline/update_bis_dsr.py DE dsr_hh_de.csv
       #     ...      
 
-      - name: Fetch previous state.json (if exists on Pages)
+      
+      # --- NEW: fetch last run's opportunities.json from GitHub Pages ---
+      - name: Fetch previous opportunities.json (if exists on Pages)
         run: |
           set -euxo pipefail
           mkdir -p output
-          BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}/state.json"
-          curl -fsSL "$BASE" -o output/prev_state.json || echo "No previous state found."
-          [ -f output/prev_state.json ] && { echo "---- prev_state.json (head) ----"; head -n 20 output/prev_state.json; } || true
+          BASE="https://${GITHUB_REPOSITORY%%/*}.github.io/${GITHUB_REPOSITORY#*/}/opportunities.json"
+          if curl -fsSL "$BASE" -o output/prev_opportunities.json ; then
+            echo "---- prev_opportunities.json (head) ----"
+            head -n 30 output/prev_opportunities.json || true
+          else
+            echo "No previous opportunities.json found."
+          fi
 
       - name: Generate dashboard HTML
         run: |
