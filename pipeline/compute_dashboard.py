@@ -93,8 +93,6 @@ def load_series(csv_path: Path, weekly_resample: bool = True) -> pd.Series:
         s = s.resample("W-FRI").last().interpolate()
     return s
 
-assert not cli_series.equals(other_country_cli_series)
-
 def zscore(s: pd.Series) -> pd.Series:
     if len(s) < 10:
         return s * np.nan
@@ -125,6 +123,20 @@ def sparkline_svg(values, width: int = 120, height: int = 26, stroke: str = "#1f
         f"<path d='{path}' fill='none' stroke='{stroke}' stroke-width='1.5' /></svg>"
     )
     return svg
+
+
+def series_fingerprint(s: pd.Series, tail_points: int = 52, precision: int = 6):
+    """
+    Return a small, hashable fingerprint of the last N weekly values of a series.
+    Rounded to 'precision' decimals to avoid tiny float noise.
+    """
+    if s is None or len(s) == 0:
+        return ()
+    tail = s.tail(tail_points).astype(float).round(precision)
+    # Drop NaNs before building the tuple
+    tail = tail[pd.notna(tail)]
+    return tuple(tail.values.tolist())
+
 
 # ---------------------
 # Series mapping (labels -> files)
@@ -290,6 +302,10 @@ contrib_clean = [(l, z, d, c) for (l, z, d, c) in contrib_rows if not np.isnan(c
 abs_sum = sum(abs(c) for (_, _, _, c) in contrib_clean) or 0.0
 contributors_sorted = sorted(contrib_clean, key=lambda t: abs(t[3]), reverse=True)
 
+
+# Keep fingerprints of CLI series to detect accidental duplicates across countries
+seen_cli_fingerprints = {}  # name -> fingerprint tuple
+
 # ---------------------
 # Country subscores
 # ---------------------
@@ -307,6 +323,25 @@ for c in CFG["countries"]:
     fx_path  = DATA_DIR / fx_file
 
     s_cli = load_series(cli_path, weekly_resample=True)
+    
+    # --- Data integrity check: detect identical CLIs across countries (likely a mapping bug)
+    fp = series_fingerprint(s_cli, tail_points=52, precision=6)
+    if fp:
+        dup = next((other for other, other_fp in seen_cli_fingerprints.items() if other_fp == fp), None)
+        if dup:
+            print(f"⚠️ Data check: {name} CLI appears IDENTICAL to {dup} over the last 52 points. "
+                  f"Confirm file paths & workflow mapping for {name} (cli_path={cli_path}).")
+        else:
+            seen_cli_fingerprints[name] = fp
+
+    
+    fx_fp = series_fingerprint(s_fx, tail_points=52, precision=6)
+    if s_fx is None or len(s_fx) == 0:
+        print(f"⚠️ FX data missing for {name}: expected file {fx_path}")
+
+
+    
+    
     s_fx  = load_series(fx_path,  weekly_resample=True)
 
     z_cli = zscore(s_cli)
