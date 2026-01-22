@@ -135,6 +135,13 @@ jobs:
           head -n 5 data/t10yie.csv || true
 
 
+      - name: Download Baltic Dry Index (Stooq)
+        run: |
+          set -euxo pipefail
+          python pipeline/update_bdi_stooq.py
+          echo "---- Preview BDI (head) ----"
+          head -n 5 data/bdi_stooq.csv || true
+
         
       - name: Download Brent (FRED)
         run: |
