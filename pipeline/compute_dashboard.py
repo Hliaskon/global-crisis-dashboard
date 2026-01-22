@@ -100,6 +100,9 @@ if yaml is not None and cfg_path.exists():
             CFG["indicators_core"] += user_cfg["indicators_custom"]
     except Exception as e:
         print(f"⚠️ Failed to read config.yaml; using defaults. Error: {e}")
+    
+# NEW: pass through the 'universe' map (ETFs) if provided in config.yaml
+CFG["universe"] = user_cfg.get("universe", {})
 
 LOOKBACK_W = int(CFG["windows"]["zscore_lookback_weeks"])
 SMOOTH_W   = int(CFG["windows"]["smoothing_ma_weeks"])
@@ -651,6 +654,19 @@ html.append("""
   .det.ok { background:#e8f5e9; }
   .det.yellow { background:#fff8e1; }
   .det.red { background:#ffebee; }
+  
+  /* --- Heatmap coloring for opportunity actions --- */
+  .hm { text-align:center; font-weight:600; padding:6px 8px; border-radius:6px; }
+  .hm-buy { background:#e6f4ea; color:#0b8043; }           /* green */
+  .hm-watch { background:#fff8e1; color:#8d6e00; }          /* amber */
+  .hm-avoid { background:#ffebee; color:#b00020; }          /* red */
+  .hm-gold { background:#fff3cd; color:#7a5d00; }           /* gold hedge */
+  .hm-cyc { background:#e3f2fd; color:#1565c0; }            /* cyclical beta */
+  .hm-usd { background:#e1f5fe; color:#01579b; }            /* USD hedge */
+  .hm-local { background:#eceff1; color:#37474f; }          /* local / neutral */
+  .legend { font-size:12px; color:#666; margin-top:6px; }
+  .etf { font-family:monospace; background:#f4f6f8; padding:2px 6px; border-radius:4px; margin-right:6px; display:inline-block; }
+
 </style>
 """)
 html.append("</head><body>")
@@ -786,6 +802,101 @@ try:
     html.append("</table>")
 except Exception as _e:
     # Silent: keep HTML rendering robust even if opportunities.json missing
+    pass
+
+
+# ---- Country Heatmap (compact action view) ----
+try:
+    opp = json.loads((OUT_DIR / "opportunities.json").read_text(encoding="utf-8"))
+    def cls_for(action: str) -> str:
+        a = (action or "").upper()
+        if a == "BUY": return "hm hm-buy"
+        if a == "AVOID": return "hm hm-avoid"
+        if a == "WATCH": return "hm hm-watch"
+        if a == "GOLD_HEDGE": return "hm hm-gold"
+        if a == "CYCLICAL_BETA": return "hm hm-cyc"
+        if a == "USD_HEDGE": return "hm hm-usd"
+        if a == "LOCAL": return "hm hm-local"
+        return "hm"
+
+    html.append("<h3 class='section'>Country Heatmap</h3>")
+    html.append("<table><tr><th>Country</th><th>Equities</th><th>Bonds</th><th>Commodities</th><th>FX</th></tr>")
+    for item in opp.get("countries", []):
+        cn = item.get("country","-")
+        eq = (item.get("equities") or {}).get("action","-")
+        bd = (item.get("bonds")    or {}).get("action","-")
+        cm = (item.get("commods")  or {}).get("action","-")
+        fx = (item.get("fx")       or {}).get("action","-")
+        html.append(
+            "<tr>"
+            f"<td>{cn}</td>"
+            f"<td><span class='{cls_for(eq)}'>{eq}</span></td>"
+            f"<td><span class='{cls_for(bd)}'>{bd}</span></td>"
+            f"<td><span class='{cls_for(cm)}'>{cm}</span></td>"
+            f"<td><span class='{cls_for(fx)}'>{fx}</span></td>"
+            "</tr>"
+        )
+    html.append("</table>")
+    html.append("<div class='legend'>Legend: BUY (green), WATCH (amber), AVOID (red), GOLD_HEDGE (gold), CYCLICAL_BETA (blue), USD_HEDGE (light blue), LOCAL (grey)</div>")
+except Exception:
+    # keep page resilient if opportunities.json missing
+    pass
+
+
+
+# ---- ETF Suggestions (from config.yaml -> universe) ----
+try:
+    opp = json.loads((OUT_DIR / "opportunities.json").read_text(encoding="utf-8"))
+    univ = CFG.get("universe", {}) or {}
+    eq_map  = (univ.get("equities")      or {})
+    bd_map  = (univ.get("bonds_nominal") or {})
+    com_gl  = (univ.get("commodities")   or {}).get("Global", [])
+    fx_gl   = (univ.get("fx_hedges")     or {}).get("Global", [])
+
+    def etf_badges(tickers):
+        if not tickers: return ""
+        spans = [f"<span class='etf'>{t}</span>" for t in tickers]
+        return "".join(spans)
+
+    html.append("<h3 class='section'>ETF Suggestions (rule‑based)</h3>")
+    html.append("<table><tr><th>Country</th><th>Equities</th><th>Bonds</th><th>Commodities</th><th>FX</th></tr>")
+    for item in opp.get("countries", []):
+        cn = item.get("country","-")
+        eq_act = (item.get("equities") or {}).get("action","-").upper()
+        bd_act = (item.get("bonds")    or {}).get("action","-").upper()
+        cm_act = (item.get("commods")  or {}).get("action","-").upper()
+        fx_act = (item.get("fx")       or {}).get("action","-").upper()
+
+        # Equities: show country ETFs if BUY
+        eq_list = eq_map.get(cn, []) if eq_act == "BUY" else []
+
+        # Bonds: show country bond ETFs if BUY
+        bd_list = bd_map.get(cn, []) if bd_act == "BUY" else []
+
+        # Commodities: global list depending on action
+        if cm_act == "GOLD_HEDGE":
+            cm_list = [t for t in com_gl if t.upper().startswith("GLD") or t.upper().startswith("IAU")] or com_gl
+        elif cm_act == "CYCLICAL_BETA":
+            cm_list = [t for t in com_gl if t.upper() in {"DBC","USO","DBB","GSG"}] or com_gl
+        else:
+            cm_list = []
+
+        # FX: show USD hedge tickers if USD_HEDGE
+        fx_list = fx_gl if fx_act == "USD_HEDGE" else []
+
+        html.append(
+            "<tr>"
+            f"<td>{cn}</td>"
+            f"<td>{etf_badges(eq_list)}</td>"
+            f"<td>{etf_badges(bd_list)}</td>"
+            f"<td>{etf_badges(cm_list)}</td>"
+            f"<td>{etf_badges(fx_list)}</td>"
+            "</tr>"
+        )
+    html.append("</table>")
+    html.append("<div class='legend'>Suggestions use your config.yaml → universe. Add/edit tickers there; the page updates automatically on next run.</div>")
+except Exception as _e:
+    # Silent: suggestions require opportunities.json and universe; skip if missing
     pass
 
 html.append("</body></html>")
