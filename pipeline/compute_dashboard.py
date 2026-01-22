@@ -1,21 +1,21 @@
-
 # -*- coding: utf-8 -*-
 """
 Global Crisis Dashboard — risk-normalized composite with breadth & momentum filters
 Implements proposals A–F:
   A) risk_score = +Z (bad_when_high) / -Z (bad_when_low)
-  B) Weights normalized to 100%; replaces many CLIs with breadth metrics
+  B) Weights normalized to 100%; reduces multiple CLIs via breadth
   C) Trend/acceleration crisis detector with persistence
   D) Extensible indicator registry via config.yaml
   E) Smoothing (3M MA) + standard/robust rolling Z
   F) Persist composite history for backtesting
 """
-import os, json, shutil
+import json
+import shutil
 from pathlib import Path
 from datetime import datetime
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 # Optional YAML config
 try:
@@ -23,37 +23,30 @@ try:
 except Exception:
     yaml = None
 
-# ---------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------
+# ------------------------------- Paths --------------------------------
 DATA_DIR = Path("data")
 OUT_DIR = Path("output")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-(OUT_DIR / "data").mkdir(parents=True, exist_ok=True)  # for download links
+(OUT_DIR / "data").mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------
-# Config & defaults
-# ---------------------------------------------------------------------
+# ---------------------------- Defaults --------------------------------
 DEFAULTS = {
     "windows": {
         "zscore_lookback_weeks": 260,   # ~5 years
         "smoothing_ma_weeks": 13,       # ~3 months pre-smoothing
-        "three_month_weeks": 13,        # "3M" deltas in weeks
-        "persistence_weeks": 9          # ~2 months (weekly cadence); tune 8-13
+        "three_month_weeks": 13,        # 3M deltas (weekly cadence)
+        "persistence_weeks": 9          # ~2 months persistence
     },
     "zscore": {
         "method": "standard"            # "standard" | "robust"
     },
     "thresholds": {
-        # Classic static levels still shown (hero badge)
         "composite_watch": 1.0,
         "composite_alert": 2.0,
-        # Trend/acceleration detector (C)
         "yellow_delta": 0.3,
         "red_delta": 0.7,
         "red_level": 1.0
     },
-    # These are for the “Key Indicators (US + ECB)” summary table only
     "indicators_table_us_ecb": [
         "US Yield Curve 10Y–3M (bps)",
         "US Unemployment Rate (%)",
@@ -64,25 +57,20 @@ DEFAULTS = {
         "USD/GBP (derived, ECB)",
         "USD/CAD (derived, ECB)",
         "USD/INR (derived, ECB)",
-        "USD/RUB (derived, ECB)",
+        "USD/RUB (derived, ECB)"
     ],
-    # Breadth weights (B): split across two breadth measures
     "breadth": {
         "enable": True,
-        "total_weight": 0.12,   # 12% total → 6% + 6% by default
-        "share_level_vs_mom": [0.5, 0.5],  # level breadth vs momentum breadth
-        "cli_level_threshold": 100.0       # OECD CLI below 100 = below trend
+        "total_weight": 0.12,           # 12% total
+        "share_level_vs_mom": [0.5, 0.5],
+        "cli_level_threshold": 100.0
     },
-    # Default indicator registry (A, D).
-    # You may override/extend via config.yaml -> indicators_custom (list of dicts).
+    # Core indicators (add more via config.yaml -> indicators_custom)
     "indicators_core": [
-        # label, file, bad_when: "high"|"low", base_weight
-        {"label": "US HY OAS (bps)",            "file": "hy_credit_spread.csv",   "bad_when": "high", "weight": 0.25},
-        {"label": "US Yield Curve 10Y–3M (bps)", "file": "yield_curve_10y_3m.csv","bad_when": "low",  "weight": 0.10},
-        {"label": "US Unemployment Rate (%)",    "file": "unemployment_rate.csv", "bad_when": "high", "weight": 0.10},
-        # Add more via indicators_custom in config.yaml (Brent, S&P, VIX, MOVE, PMIs, etc.)
+        {"label": "US HY OAS (bps)",             "file": "hy_credit_spread.csv",   "bad_when": "high", "weight": 0.25},
+        {"label": "US Yield Curve 10Y–3M (bps)", "file": "yield_curve_10y_3m.csv", "bad_when": "low",  "weight": 0.10},
+        {"label": "US Unemployment Rate (%)",    "file": "unemployment_rate.csv",  "bad_when": "high", "weight": 0.10}
     ],
-    # Countries list used for country subscores (legacy) and for CLI breadth
     "countries": []
 }
 
@@ -92,19 +80,19 @@ if yaml is not None and cfg_path.exists():
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
-        # deepish merge with care
+        # shallow/deep merge
         for k, v in DEFAULTS.items():
             if isinstance(v, dict):
                 CFG[k] = {**v, **(user_cfg.get(k, {}) or {})}
             else:
                 CFG[k] = user_cfg.get(k, v)
-        # list keys (countries, indicators_custom)
+        # list overrides
         if isinstance(user_cfg.get("countries"), list):
             CFG["countries"] = user_cfg["countries"]
         if isinstance(user_cfg.get("indicators_core"), list):
             CFG["indicators_core"] = user_cfg["indicators_core"]
         if isinstance(user_cfg.get("indicators_custom"), list):
-            CFG["indicators_core"] = CFG["indicators_core"] + user_cfg["indicators_custom"]
+            CFG["indicators_core"] += user_cfg["indicators_custom"]
     except Exception as e:
         print(f"⚠️ Failed to read config.yaml; using defaults. Error: {e}")
 
@@ -112,7 +100,6 @@ LOOKBACK_W = int(CFG["windows"]["zscore_lookback_weeks"])
 SMOOTH_W   = int(CFG["windows"]["smoothing_ma_weeks"])
 DELTA3M_W  = int(CFG["windows"]["three_month_weeks"])
 PERSIST_W  = int(CFG["windows"]["persistence_weeks"])
-
 Z_METHOD   = (CFG.get("zscore", {}) or {}).get("method", "standard").lower()
 
 TH_COMP_WATCH = float(CFG["thresholds"]["composite_watch"])
@@ -126,15 +113,13 @@ BREADTH_W_TOTAL = float(CFG["breadth"]["total_weight"])
 BREADTH_SPLIT   = CFG["breadth"]["share_level_vs_mom"]
 CLI_LEVEL_TH    = float(CFG["breadth"]["cli_level_threshold"])
 
-# ---------------------------------------------------------------------
-# Loading & transforms
-# ---------------------------------------------------------------------
+# ----------------------------- Helpers --------------------------------
 def load_series(csv_path: Path, weekly_resample: bool = True) -> pd.Series:
-    """Load [date,value] CSV into weekly (Fri) series."""
+    """Load [date,value] CSV to Series. Weekly resample to Friday if requested."""
     if not csv_path.exists():
         return pd.Series(dtype="float64")
     df = pd.read_csv(csv_path)
-    if not {"date", "value"}.issubset(set(df.columns)):
+    if not {"date", "value"}.issubset(df.columns):
         cols = list(df.columns)
         if len(cols) >= 2:
             df = df.rename(columns={cols[0]: "date", cols[1]: "value"})
@@ -144,10 +129,10 @@ def load_series(csv_path: Path, weekly_resample: bool = True) -> pd.Series:
     df = df.dropna(subset=["date"]).sort_values("date")
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["value"])
-    s = df.set_index("date")["value"]
+    s = df.set_index("date")["value"].astype(float)
     if weekly_resample:
         s = s.resample("W-FRI").last().interpolate()
-    return s.astype(float)
+    return s
 
 def smooth_ma(s: pd.Series, window: int) -> pd.Series:
     if window <= 1 or len(s) == 0:
@@ -162,21 +147,17 @@ def rolling_standard_z(s: pd.Series, lookback: int) -> pd.Series:
     return (s - mu) / sd
 
 def rolling_robust_z(s: pd.Series, lookback: int) -> pd.Series:
-    """Rolling robust z using median & MAD (scaled)."""
     if len(s) < 10:
         return s * np.nan
     med = s.rolling(lookback, min_periods=max(26, lookback // 10)).median()
-    mad = (s.rolling(lookback, min_periods=max(26, lookback // 10))
-             .apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True))
+    mad = s.rolling(lookback, min_periods=max(26, lookback // 10)) \
+           .apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
     mad = mad.replace(0.0, np.nan)
-    z = (s - med) / (mad * 1.4826)
-    return z
+    return (s - med) / (mad * 1.4826)
 
 def roll_z(s: pd.Series) -> pd.Series:
     s2 = smooth_ma(s, SMOOTH_W)
-    if Z_METHOD == "robust":
-        return rolling_robust_z(s2, LOOKBACK_W)
-    return rolling_standard_z(s2, LOOKBACK_W)
+    return rolling_robust_z(s2, LOOKBACK_W) if Z_METHOD == "robust" else rolling_standard_z(s2, LOOKBACK_W)
 
 def series_fingerprint(s: pd.Series, tail_points: int = 52, precision: int = 6):
     if s is None or len(s) == 0:
@@ -195,7 +176,6 @@ def human_momentum_label(bad_when: str, z_delta_3m: float) -> str:
     return "Context‑dependent"
 
 def sparkline_svg(values, width: int = 120, height: int = 26, stroke: str = "#1f77b4") -> str:
-    """Mini inline SVG sparkline for the last N values."""
     if values is None:
         return ""
     v = pd.Series(values, dtype="float64").replace([np.inf, -np.inf], np.nan).dropna()
@@ -211,16 +191,13 @@ def sparkline_svg(values, width: int = 120, height: int = 26, stroke: str = "#1f
         y_svg = height - 2 - y_norm * (height - 4)
         pts.append(f"{x:.1f},{y_svg:.1f}")
     path = "M " + " L ".join(pts)
-    svg = (
+    return (
         f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
         f"xmlns='http://www.w3.org/2000/svg'>"
         f"<path d='{path}' fill='none' stroke='{stroke}' stroke-width='1.5' /></svg>"
     )
-    return svg
 
-# ---------------------------------------------------------------------
-# Core tables & country CLIs/FX (for display + breadth)
-# ---------------------------------------------------------------------
+# ----------------------- Key Indicators table -------------------------
 SERIES_MAP_KEYS = {
     "US Yield Curve 10Y–3M (bps)": "yield_curve_10y_3m.csv",
     "US Unemployment Rate (%)":    "unemployment_rate.csv",
@@ -231,10 +208,9 @@ SERIES_MAP_KEYS = {
     "USD/GBP (derived, ECB)": "usd_gbp_ecb.csv",
     "USD/CAD (derived, ECB)": "usd_cad_ecb.csv",
     "USD/INR (derived, ECB)": "usd_inr_ecb.csv",
-    "USD/RUB (derived, ECB)": "usd_rub_ecb.csv",
+    "USD/RUB (derived, ECB)": "usd_rub_ecb.csv"
 }
 
-# Build display rows for the “Key Indicators” table
 display_rows = []  # [(label, date, last_val_str, last_z_str)]
 for label, fname in SERIES_MAP_KEYS.items():
     s = load_series(DATA_DIR / fname, weekly_resample=True)
@@ -246,12 +222,10 @@ for label, fname in SERIES_MAP_KEYS.items():
     last_z    = z.iloc[-1] if len(z) else np.nan
     display_rows.append((label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{float(last_z):+.2f}"))
 
-# Country subscores (legacy view preserved) & collect CLIs for breadth
+# ------------------ Country subscores + CLI breadth -------------------
 country_states = []
 seen_cli_fp, seen_fx_fp = {}, {}
-
-cli_level_flags = []   # breadth: CLI < 100 & falling
-cli_mom_flags   = []   # breadth: Δ3M Z < 0
+cli_level_flags, cli_mom_flags = [], []
 
 for c in CFG["countries"]:
     name      = c["name"]
@@ -268,7 +242,7 @@ for c in CFG["countries"]:
     s_cli = load_series(cli_path, weekly_resample=True)
     s_fx  = load_series(fx_path,  weekly_resample=True)
 
-    # Integrity warnings (non-blocking)
+    # Non-blocking integrity notices
     try:
         fp = series_fingerprint(s_cli)
         if fp:
@@ -296,10 +270,9 @@ for c in CFG["countries"]:
     except Exception as e:
         print(f"⚠️ Data check (FX) failed for {name}: {e} | {fx_path}")
 
-    # Subscore (CLI bad_when_low; FX bad_when_high)
+    # Subscore: CLI bad_when_low -> -Z ; FX bad_when_high -> +Z
     z_cli = roll_z(s_cli)
     z_fx  = roll_z(s_fx)
-
     z_last_cli = z_cli.iloc[-1] if len(z_cli) else np.nan
     z_last_fx  = z_fx.iloc[-1]  if len(z_fx)  else np.nan
 
@@ -321,14 +294,14 @@ for c in CFG["countries"]:
         if subscore >= TH_COMP_ALERT: lvl = "ALERT"
         elif subscore >= TH_COMP_WATCH: lvl = "WATCH"
 
-    # Breadth inputs
+    # Breadth flags
     try:
         if len(s_cli) >= DELTA3M_W + 1:
-            d3 = float(s_cli.iloc[-1] - s_cli.iloc[-DELTA3M_W])
+            d3 = float(s_cli.iloc[-1] - s_cli.iloc[-DELTA3M_W])   # raw CLI change
             cli_level_flags.append(float(s_cli.iloc[-1] < CLI_LEVEL_TH and d3 < 0))
-            if len(z_cli) >= DELTA3M_W + 1:
-                z_d3 = float(z_cli.iloc[-1] - z_cli.iloc[-DELTA3M_W])
-                cli_mom_flags.append(float(z_d3 < 0))
+        if len(z_cli) >= DELTA3M_W + 1:
+            z_d3 = float(z_cli.iloc[-1] - z_cli.iloc[-DELTA3M_W]) # Z change
+            cli_mom_flags.append(float(z_d3 < 0))
     except Exception as e:
         print(f"⚠️ Breadth calc failed for {name}: {e}")
 
@@ -342,11 +315,7 @@ for c in CFG["countries"]:
         "fx_file":   fx_file
     })
 
-# ---------------------------------------------------------------------
-# Indicator registry (A, D): core + custom
-# Each indicator: label, file, bad_when ("high"|"low"), weight (base, pre-normalization)
-# We compute: Z (smoothed, rolling), risk_score (+Z or -Z), trend Δ3M(Z), weighted contrib.
-# ---------------------------------------------------------------------
+# ------------------------ Indicator registry --------------------------
 def _load_indicator_defs():
     defs = []
     for d in CFG["indicators_core"]:
@@ -366,18 +335,18 @@ def _load_indicator_defs():
 
 indicator_defs = _load_indicator_defs()
 
-# Append breadth metrics as synthetic indicators (B)
+# Add breadth as synthetic indicators (if enabled and we have flags)
 if BREADTH_ON and len(cli_level_flags) > 0 and len(cli_mom_flags) > 0:
-    w_level = BREADTH_W_TOTAL * float(BREADTH_SPLIT[0])
-    w_mom   = BREADTH_W_TOTAL * float(BREADTH_SPLIT[1])
     try:
+        w_level = BREADTH_W_TOTAL * float(BREADTH_SPLIT[0])
+        w_mom   = BREADTH_W_TOTAL * float(BREADTH_SPLIT[1])
         p_level = float(np.mean(cli_level_flags))
         p_mom   = float(np.mean(cli_mom_flags))
 
+        # Small constant weekly series to pass through z machinery
         idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=26, freq="W-FRI")
         s_level = pd.Series([p_level]*len(idx), index=idx, dtype=float)
         s_mom   = pd.Series([p_mom]*len(idx),   index=idx, dtype=float)
-
         z_level = roll_z(s_level)
         z_mom   = roll_z(s_mom)
 
@@ -400,19 +369,17 @@ if BREADTH_ON and len(cli_level_flags) > 0 and len(cli_mom_flags) > 0:
     except Exception as e:
         print(f"⚠️ Could not build breadth indicators: {e}")
 
-# Normalize weights to 1.0 (100%) over all indicators we will actually use
+# Normalize all indicator weights to 1.0
 w_sum = sum(max(0.0, float(d.get("weight", 0.0))) for d in indicator_defs)
 if w_sum <= 0:
+    n = max(1, len(indicator_defs))
     for d in indicator_defs:
-        d["weight"] = 1.0 / max(1, len(indicator_defs))
+        d["weight"] = 1.0 / n
 else:
     for d in indicator_defs:
         d["weight"] = float(d.get("weight", 0.0)) / w_sum
 
-# ---------------------------------------------------------------------
-# Build per-indicator z, trend, risk_score, weighted contribution
-# Also build a composite time series (normalized for missing indicators)
-# ---------------------------------------------------------------------
+# ---------------- Build per-indicator series & contributions ----------
 def build_indicator_series(d):
     """Return (z_series, risk_series, trend_series, last_values_dict)."""
     if "_z_series" in d and "_synthetic_series" in d:
@@ -421,14 +388,8 @@ def build_indicator_series(d):
     else:
         base = load_series(DATA_DIR / d["file"], weekly_resample=True)
         z    = roll_z(base)
+    risk = -z if d["bad_when"] == "low" else z
 
-    # Risk-normalized score
-    if d["bad_when"] == "low":
-        risk = -z
-    else:
-        risk = z
-
-    # 3M trend in Z
     if len(z) >= DELTA3M_W + 1:
         trend = z - z.shift(DELTA3M_W)
         last_trend = float(trend.iloc[-1])
@@ -438,18 +399,11 @@ def build_indicator_series(d):
 
     last_z    = float(z.iloc[-1]) if len(z) else np.nan
     last_risk = float(risk.iloc[-1]) if len(risk) else np.nan
+    return z, risk, trend, {"z_last": last_z, "risk_last": last_risk, "trend_last": last_trend}
 
-    info = {
-        "z_last": last_z,
-        "risk_last": last_risk,
-        "trend_last": last_trend
-    }
-    return z, risk, trend, info
-
-# Compute series and contributions
-contrib_rows = []  # [(label, z_last, momentum_label, risk_last, weight, weighted_contrib)]
-risk_series_dict = {}   # label -> (risk_series, weight)
-weights_dict     = {}   # label -> weight
+contrib_rows = []         # [(label, z_last, momentum_label, risk_last, weight, weighted_contrib)]
+risk_series_dict = {}     # label -> (risk_series, weight)
+weights_dict     = {}     # label -> weight
 
 for d in indicator_defs:
     try:
@@ -459,72 +413,60 @@ for d in indicator_defs:
         risk_series_dict[d["label"]] = (risk, w)
 
         momentum_txt = human_momentum_label(d["bad_when"], info["trend_last"])
-        weighted_contrib = np.nan
-        if not np.isnan(info["risk_last"]):
-            weighted_contrib = w * info["risk_last"]
+        weighted_contrib = np.nan if np.isnan(info["risk_last"]) else w * info["risk_last"]
 
-        contrib_rows.append((
-            d["label"],
-            info["z_last"],
-            momentum_txt,
-            info["risk_last"],
-            w,
-            weighted_contrib
-        ))
+        contrib_rows.append((d["label"], info["z_last"], momentum_txt, info["risk_last"], w, weighted_contrib))
     except Exception as e:
         print(f"⚠️ Indicator calc failed for {d.get('label')}: {e}")
 
-# Normalize composite through time for missing indicators:
+# Normalize composite through time when some indicators are missing
 def build_composite_series(risk_series_dict, weights_dict):
     if not risk_series_dict:
         return pd.Series(dtype=float)
     risk_df = pd.DataFrame({k: v[0] * v[1] for k, v in risk_series_dict.items()})
-    w_df = pd.DataFrame({k: v for k, v in weights_dict.items()}, index=risk_df.index).reindex(risk_df.index)
+    w_df    = pd.DataFrame({k: v for k, v in weights_dict.items()}, index=risk_df.index).reindex(risk_df.index)
     for col in risk_df.columns:
         w_df[col] = np.where(risk_df[col].notna(), w_df[col], np.nan)
     num = risk_df.sum(axis=1, skipna=True)
     den = w_df.sum(axis=1, skipna=True)
-    comp = num / den
-    return comp
+    return num / den
 
 composite_series = build_composite_series(risk_series_dict, weights_dict)
-
-# Composite snapshot & classic static levels (hero badges)
 composite = float(composite_series.dropna().iloc[-1]) if len(composite_series.dropna()) else np.nan
+
 level = "OK"
 if not np.isnan(composite):
     if composite >= TH_COMP_ALERT: level = "ALERT"
     elif composite >= TH_COMP_WATCH: level = "WATCH"
 
-# Trend/acceleration detector (C)
+# Detector with persistence
 def detector_level(comp_series: pd.Series):
     if comp_series is None or len(comp_series) < DELTA3M_W + 1:
         return "NA", np.nan
     comp_delta = float(comp_series.iloc[-1] - comp_series.iloc[-DELTA3M_W])
 
     yellow_cond = (comp_series > 0) & ((comp_series - comp_series.shift(DELTA3M_W)) > TH_YELLOW_D)
-    red_cond    = ( (comp_series > TH_RED_LVL) | ((comp_series - comp_series.shift(DELTA3M_W)) > TH_RED_D) )
+    red_cond    = ((comp_series > TH_RED_LVL) | ((comp_series - comp_series.shift(DELTA3M_W)) > TH_RED_D))
 
     def holds_persistently(mask: pd.Series) -> bool:
-        if len(mask) < PERSIST_W: return False
+        if len(mask) < PERSIST_W:
+            return False
         return bool(mask.tail(PERSIST_W).all())
 
-    if holds_persistently(red_cond):
-        return "RED", comp_delta
-    if holds_persistently(yellow_cond):
-        return "YELLOW", comp_delta
+    if holds_persistently(red_cond):    return "RED",    comp_delta
+    if holds_persistently(yellow_cond): return "YELLOW", comp_delta
     return "OK", comp_delta
 
 det_level, comp_delta_3m = detector_level(composite_series)
 
-# Share calc for contributors table
+# Shares for contributors table (snapshot)
 abs_sum = sum(abs(x[5]) for x in contrib_rows if x[5] is not None and not np.isnan(x[5])) or 0.0
 contrib_rows_out = []
 for (lbl, z_last, mom_txt, risk_last, w, w_contrib) in contrib_rows:
     share = "-" if abs_sum == 0 or w_contrib is None or np.isnan(w_contrib) else f"{(abs(w_contrib)/abs_sum)*100:.0f}%"
     contrib_rows_out.append((lbl, z_last, mom_txt, risk_last, w, w_contrib, share))
 
-# Previous state for Δ movers (optional)
+# Previous state for Δ (optional)
 prev_state_path = OUT_DIR / "prev_state.json"
 prev_contrib = {}
 if prev_state_path.exists():
@@ -534,9 +476,7 @@ if prev_state_path.exists():
     except Exception as e:
         print(f"⚠️ Could not parse prev_state.json: {e}")
 
-# ---------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------
+# ----------------------------- HTML -----------------------------------
 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 html = []
 html.append("<html><head><meta charset='utf-8'>")
@@ -551,8 +491,8 @@ html.append("""
   .ok{background:#e8f5e9;}
   .watch{background:#fff8e1;}
   .alert{background:#ffebee;}
-  .pos{color:#b71c1c;}  /* pushes risk up */
-  .neg{color:#1b5e20;}  /* pulls risk down */
+  .pos{color:#b71c1c;}
+  .neg{color:#1b5e20;}
   .small{color:#666;font-size:12px}
   td svg{display:block}
   h2 { margin-top: 6px; }
@@ -578,14 +518,14 @@ html.append("""
 </style>
 """)
 html.append("</head><body>")
-
 html.append("<h1>Global Crisis Early Warning – Dashboard</h1>")
 html.append(f"<p class='small'>Generated: {now}</p>")
 
-# Classic composite badge (static thresholds)
 badge = "<span class='badge ok'>OK</span>"
-if level == "WATCH": badge = "<span class='badge watch'>WATCH</span>"
-elif level == "ALERT": badge = "<span class='badge alert'>ALERT</span>"
+if level == "WATCH":
+    badge = "<span class='badge watch'>WATCH</span>"
+elif level == "ALERT":
+    badge = "<span class='badge alert'>ALERT</span>"
 
 comp_str = "-" if np.isnan(composite) else f"{composite:.2f}"
 det_badge = {
@@ -596,8 +536,6 @@ det_badge = {
 }.get(det_level, "<span class='det'>Detector: NA</span>")
 
 delta_str = "–" if np.isnan(comp_delta_3m) else f"{comp_delta_3m:+.2f}"
-
-# Composite hero with detector status & delta
 html.append(
     "<div class='hero'>"
     f"<div class='big'>{comp_str}</div>"
@@ -608,7 +546,7 @@ html.append(
     "</div>"
 )
 
-# Contributors table (risk-normalized, weighted)
+# Contributors
 html.append("<h3 class='section'>Contributors (risk‑normalized Z; momentum‑aware labels)</h3>")
 html.append("<table><tr><th>Indicator</th><th>Z‑score</th><th>Momentum label</th><th>Risk score</th><th>Weight</th><th>Weighted</th><th>Share</th></tr>")
 if contrib_rows_out:
@@ -630,7 +568,7 @@ else:
     html.append("<tr><td colspan='7'>No contributors available.</td></tr>")
 html.append("</table>")
 
-# Key indicators (US + ECB)
+# Key indicators
 html.append("<h3 class='section'>Key Indicators (US + ECB)</h3>")
 html.append("<table><tr><th>Indicator</th><th>Last Date</th><th>Last Value</th><th>Z‑Score</th></tr>")
 for r in display_rows:
@@ -638,7 +576,7 @@ for r in display_rows:
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td class='num'>{r[2]}</td><td class='num'>{r[3]}</td></tr>")
 html.append("</table>")
 
-# Country cards (legacy view preserved) — FIXED sparkline & CSV links
+# Country cards
 def spark_from_file(file_name: str, tail_points: int = 52) -> str:
     path = DATA_DIR / file_name
     s = load_series(path, weekly_resample=True)
@@ -665,7 +603,7 @@ for c in country_states:
         cli_svg = spark_from_file(c["cli_file"])
         html.append(
             f"<tr><td>{cli_row[0]}</td><td>{cli_row[1]}</td><td class='num'>{cli_row[2]}</td><td class='num'>{cli_row[3]}</td>"
-            f"<td>{cli_svg}</td><td><a href='data/{c['cli_file']}'>CSV</a></td></tr>"
+            f"<td>{cli_svg}</td><td>data/{c[CSV</a></td></tr>"
         )
     else:
         html.append(f"<tr><td>{c['cli_label']}</td><td>-</td><td>-</td><td>-</td><td></td><td class='dim'>data unavailable</td></tr>")
@@ -674,7 +612,7 @@ for c in country_states:
         fx_svg = spark_from_file(c["fx_file"])
         html.append(
             f"<tr><td>{fx_row[0]}</td><td>{fx_row[1]}</td><td class='num'>{fx_row[2]}</td><td class='num'>{fx_row[3]}</td>"
-            f"<td>{fx_svg}</td><td><a href='data/{c['fx_file']}'>CSV</a></td></tr>"
+            f"<td>{fx_svg}</td><td>data/{c[CSV</a></td></tr>"
         )
     else:
         html.append(f"<tr><td>{c['fx_label']}</td><td>-</td><td>-</td><td>-</td><td></td><td class='dim'>data unavailable</td></tr>")
@@ -682,27 +620,21 @@ for c in country_states:
     html.append("</table>")
     html.append("</div>")
 
-# Footnote
 html.append(
     "<p class='small'>Notes: Every indicator is smoothed (3M MA) then Z‑scored on a rolling window; "
     "risk_score = +Z if bad_when_high, −Z if bad_when_low. Composite is the normalized sum of weighted risk scores. "
-    "‘Momentum’ uses 3‑month Δ in Z to decide when “Rising/Falling → (higher/lower) risk” applies. "
-    "Detector applies persistence to avoid whipsaws. Tune windows & weights in <code>config.yaml</code>.</p>"
+    "‘Momentum’ uses 3‑month Δ in Z. Detector uses persistence to avoid whipsaws. Tune in <code>config.yaml</code>.</p>"
 )
 
 html.append("</body></html>")
 
-# ---------------------------------------------------------------------
-# Write artifacts
-# ---------------------------------------------------------------------
+# ---------------------------- Artifacts -------------------------------
 (OUT_DIR / "index.html").write_text("\n".join(html), encoding="utf-8")
 print("✅ Wrote output/index.html")
 
-# Copy data CSVs for download links
 for f in DATA_DIR.glob("*.csv"):
     shutil.copy2(f, OUT_DIR / "data" / f.name)
 
-# Persist snapshot state
 state = {
     "generated_utc": now,
     "composite": None if np.isnan(composite) else round(float(composite), 3),
@@ -721,11 +653,8 @@ state = {
 (OUT_DIR / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 print("✅ Wrote output/state.json")
 
-# Save composite history (for backtesting later)
-comp_hist = pd.DataFrame({
-    "date": composite_series.index,
-    "composite": composite_series.values
-}).dropna()
+# Composite history for backtesting
+comp_hist = pd.DataFrame({"date": composite_series.index, "composite": composite_series.values}).dropna()
 if len(comp_hist) >= DELTA3M_W + 1:
     comp_hist["composite_delta_3m"] = comp_hist["composite"] - comp_hist["composite"].shift(DELTA3M_W)
     comp_hist["detector_flag"] = np.where(
@@ -738,4 +667,3 @@ else:
 
 comp_hist.to_csv(OUT_DIR / "composite_history.csv", index=False)
 print("✅ Wrote output/composite_history.csv")
-``
