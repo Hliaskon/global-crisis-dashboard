@@ -53,7 +53,7 @@ DEFAULTS = {
         "red_delta": 0.7,
         "red_level": 1.0
     },
-    # These are for the "Key Indicators (US + ECB)" summary table only
+    # These are for the “Key Indicators (US + ECB)” summary table only
     "indicators_table_us_ecb": [
         "US Yield Curve 10Y–3M (bps)",
         "US Unemployment Rate (%)",
@@ -77,10 +77,10 @@ DEFAULTS = {
     # You may override/extend via config.yaml -> indicators_custom (list of dicts).
     "indicators_core": [
         # label, file, bad_when: "high"|"low", base_weight
-        {"label": "US HY OAS (bps)",           "file": "hy_credit_spread.csv",   "bad_when": "high", "weight": 0.25},
-        {"label": "US Yield Curve 10Y–3M (bps)","file": "yield_curve_10y_3m.csv","bad_when": "low",  "weight": 0.10},
-        {"label": "US Unemployment Rate (%)",   "file": "unemployment_rate.csv", "bad_when": "high", "weight": 0.10},
-        # You can add Brent, S&P, VIX, MOVE, PMIs, etc. via indicators_custom in config.yaml
+        {"label": "US HY OAS (bps)",            "file": "hy_credit_spread.csv",   "bad_when": "high", "weight": 0.25},
+        {"label": "US Yield Curve 10Y–3M (bps)", "file": "yield_curve_10y_3m.csv","bad_when": "low",  "weight": 0.10},
+        {"label": "US Unemployment Rate (%)",    "file": "unemployment_rate.csv", "bad_when": "high", "weight": 0.10},
+        # Add more via indicators_custom in config.yaml (Brent, S&P, VIX, MOVE, PMIs, etc.)
     ],
     # Countries list used for country subscores (legacy) and for CLI breadth
     "countries": []
@@ -104,7 +104,6 @@ if yaml is not None and cfg_path.exists():
         if isinstance(user_cfg.get("indicators_core"), list):
             CFG["indicators_core"] = user_cfg["indicators_core"]
         if isinstance(user_cfg.get("indicators_custom"), list):
-            # append, do not overwrite
             CFG["indicators_core"] = CFG["indicators_core"] + user_cfg["indicators_custom"]
     except Exception as e:
         print(f"⚠️ Failed to read config.yaml; using defaults. Error: {e}")
@@ -195,16 +194,38 @@ def human_momentum_label(bad_when: str, z_delta_3m: float) -> str:
         return "Falling → higher risk" if z_delta_3m < 0 else "Rising → lower risk"
     return "Context‑dependent"
 
+def sparkline_svg(values, width: int = 120, height: int = 26, stroke: str = "#1f77b4") -> str:
+    """Mini inline SVG sparkline for the last N values."""
+    if values is None:
+        return ""
+    v = pd.Series(values, dtype="float64").replace([np.inf, -np.inf], np.nan).dropna()
+    if v.empty or len(v) < 2:
+        return ""
+    vmin, vmax = float(v.min()), float(v.max())
+    span = (vmax - vmin) if vmax != vmin else 1.0
+    x_step = width / (len(v) - 1)
+    pts = []
+    for i, y in enumerate(v):
+        x = i * x_step
+        y_norm = (float(y) - vmin) / span
+        y_svg = height - 2 - y_norm * (height - 4)
+        pts.append(f"{x:.1f},{y_svg:.1f}")
+    path = "M " + " L ".join(pts)
+    svg = (
+        f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
+        f"xmlns='http://www.w3.org/2000/svg'>"
+        f"<path d='{path}' fill='none' stroke='{stroke}' stroke-width='1.5' /></svg>"
+    )
+    return svg
+
 # ---------------------------------------------------------------------
 # Core tables & country CLIs/FX (for display + breadth)
 # ---------------------------------------------------------------------
-# (We keep a simple map for the “Key Indicators (US + ECB)” table.)
 SERIES_MAP_KEYS = {
     "US Yield Curve 10Y–3M (bps)": "yield_curve_10y_3m.csv",
     "US Unemployment Rate (%)":    "unemployment_rate.csv",
     "US HY OAS (bps)":             "hy_credit_spread.csv",
     "USD per EUR (ECB)":           "eur_usd_ecb.csv",
-
     "USD/JPY (derived, ECB)": "usd_jpy_ecb.csv",
     "USD/CNY (derived, ECB)": "usd_cny_ecb.csv",
     "USD/GBP (derived, ECB)": "usd_gbp_ecb.csv",
@@ -225,12 +246,12 @@ for label, fname in SERIES_MAP_KEYS.items():
     last_z    = z.iloc[-1] if len(z) else np.nan
     display_rows.append((label, last_date, f"{last_val:.2f}", "-" if np.isnan(last_z) else f"{float(last_z):+.2f}"))
 
-# Country subscores (legacy view, still shown) & collect CLIs for breadth
+# Country subscores (legacy view preserved) & collect CLIs for breadth
 country_states = []
 seen_cli_fp, seen_fx_fp = {}, {}
 
-cli_level_flags = []   # for breadth level: CLI < 100 & falling
-cli_mom_flags   = []   # for breadth momentum: Δ3M < 0
+cli_level_flags = []   # breadth: CLI < 100 & falling
+cli_mom_flags   = []   # breadth: Δ3M Z < 0
 
 for c in CFG["countries"]:
     name      = c["name"]
@@ -275,15 +296,15 @@ for c in CFG["countries"]:
     except Exception as e:
         print(f"⚠️ Data check (FX) failed for {name}: {e} | {fx_path}")
 
-    # Subscore
+    # Subscore (CLI bad_when_low; FX bad_when_high)
     z_cli = roll_z(s_cli)
     z_fx  = roll_z(s_fx)
 
     z_last_cli = z_cli.iloc[-1] if len(z_cli) else np.nan
     z_last_fx  = z_fx.iloc[-1]  if len(z_fx)  else np.nan
 
-    score_cli = -float(z_last_cli) if not np.isnan(z_last_cli) else np.nan  # CLI bad_when_low
-    score_fx  =  float(z_last_fx)  if not np.isnan(z_last_fx)  else np.nan  # FX bad_when_high
+    score_cli = -float(z_last_cli) if not np.isnan(z_last_cli) else np.nan
+    score_fx  =  float(z_last_fx)  if not np.isnan(z_last_fx)  else np.nan
 
     parts = []
     if not np.isnan(score_cli): parts.append((score_cli, w_cli))
@@ -300,22 +321,16 @@ for c in CFG["countries"]:
         if subscore >= TH_COMP_ALERT: lvl = "ALERT"
         elif subscore >= TH_COMP_WATCH: lvl = "WATCH"
 
-    # For breadth calculations (B)
+    # Breadth inputs
     try:
-        # Level < 100 & falling (weekly): detect fall via last vs 13 weeks ago on raw CLI
         if len(s_cli) >= DELTA3M_W + 1:
             d3 = float(s_cli.iloc[-1] - s_cli.iloc[-DELTA3M_W])
             cli_level_flags.append(float(s_cli.iloc[-1] < CLI_LEVEL_TH and d3 < 0))
-            # Momentum breadth: Z delta negative
             if len(z_cli) >= DELTA3M_W + 1:
                 z_d3 = float(z_cli.iloc[-1] - z_cli.iloc[-DELTA3M_W])
                 cli_mom_flags.append(float(z_d3 < 0))
     except Exception as e:
         print(f"⚠️ Breadth calc failed for {name}: {e}")
-
-    # Country card data
-    cli_row = next((r for r in display_rows if r[0] == cli_label), None)
-    fx_row  = next((r for r in display_rows if r[0] == fx_label),  None)
 
     country_states.append({
         "name": name,
@@ -335,9 +350,8 @@ for c in CFG["countries"]:
 def _load_indicator_defs():
     defs = []
     for d in CFG["indicators_core"]:
-        if not isinstance(d, dict): 
+        if not isinstance(d, dict):
             continue
-        # Keep only those that have a file present (robust to partial repos)
         f = DATA_DIR / d.get("file", "__missing__.csv")
         if f.exists():
             defs.append({
@@ -353,22 +367,13 @@ def _load_indicator_defs():
 indicator_defs = _load_indicator_defs()
 
 # Append breadth metrics as synthetic indicators (B)
-breadth_components = []
 if BREADTH_ON and len(cli_level_flags) > 0 and len(cli_mom_flags) > 0:
     w_level = BREADTH_W_TOTAL * float(BREADTH_SPLIT[0])
     w_mom   = BREADTH_W_TOTAL * float(BREADTH_SPLIT[1])
-
-    # Build weekly proportions (level & momentum), then rolling Z of those proportions
-    # Use last aligned dates of country CLI files (approximate with current run only)
     try:
-        # Synthesize short series using rolling window over last N weeks: we can create a constant series of the current proportion
-        # but better approach is to backfill by recomputing flags historically (requires all CLI histories).
-        # For now, treat as "point-in-time" with a tiny 5-point window to still display Z≈0; contribution then reflects level.
-        # If you want full historical breadth series, we can upgrade later.
         p_level = float(np.mean(cli_level_flags))
         p_mom   = float(np.mean(cli_mom_flags))
 
-        # Create tiny constant series (last 26w) to feed z machinery safely
         idx = pd.date_range(end=pd.Timestamp.today().normalize(), periods=26, freq="W-FRI")
         s_level = pd.Series([p_level]*len(idx), index=idx, dtype=float)
         s_mom   = pd.Series([p_mom]*len(idx),   index=idx, dtype=float)
@@ -378,7 +383,7 @@ if BREADTH_ON and len(cli_level_flags) > 0 and len(cli_mom_flags) > 0:
 
         indicator_defs.append({
             "label": "CLI breadth: % below-100 & falling",
-            "file":  "__synthetic_breadth_level__",  # marker
+            "file":  "__synthetic_breadth_level__",
             "bad_when": "high",
             "weight": w_level,
             "_synthetic_series": s_level,
@@ -398,7 +403,6 @@ if BREADTH_ON and len(cli_level_flags) > 0 and len(cli_mom_flags) > 0:
 # Normalize weights to 1.0 (100%) over all indicators we will actually use
 w_sum = sum(max(0.0, float(d.get("weight", 0.0))) for d in indicator_defs)
 if w_sum <= 0:
-    # Fallback equal weights if user forgot to set them
     for d in indicator_defs:
         d["weight"] = 1.0 / max(1, len(indicator_defs))
 else:
@@ -443,7 +447,7 @@ def build_indicator_series(d):
     return z, risk, trend, info
 
 # Compute series and contributions
-contrib_rows = []  # [(label, z_last, momentum_label, risk_last, weight, weighted_contrib, share)]
+contrib_rows = []  # [(label, z_last, momentum_label, risk_last, weight, weighted_contrib)]
 risk_series_dict = {}   # label -> (risk_series, weight)
 weights_dict     = {}   # label -> weight
 
@@ -471,21 +475,11 @@ for d in indicator_defs:
         print(f"⚠️ Indicator calc failed for {d.get('label')}: {e}")
 
 # Normalize composite through time for missing indicators:
-# composite_t = sum_i (w_i * risk_i_t) / sum_{i with data at t} (w_i)
-# This preserves 0=neutral scaling when some series are missing at a date.
 def build_composite_series(risk_series_dict, weights_dict):
-    # Align by index
     if not risk_series_dict:
         return pd.Series(dtype=float)
-    # Concat into DataFrame of weighted risk and a DataFrame of weights (where risk is not NaN)
-    risk_df = pd.DataFrame(
-        {k: v[0] * v[1] for k, v in risk_series_dict.items()}
-    )
-    w_df = pd.DataFrame(
-        {k: v for k, v in weights_dict.items()},
-        index=risk_df.index
-    ).reindex(risk_df.index)
-    # Mask weights where risk is NaN
+    risk_df = pd.DataFrame({k: v[0] * v[1] for k, v in risk_series_dict.items()})
+    w_df = pd.DataFrame({k: v for k, v in weights_dict.items()}, index=risk_df.index).reindex(risk_df.index)
     for col in risk_df.columns:
         w_df[col] = np.where(risk_df[col].notna(), w_df[col], np.nan)
     num = risk_df.sum(axis=1, skipna=True)
@@ -503,16 +497,14 @@ if not np.isnan(composite):
     elif composite >= TH_COMP_WATCH: level = "WATCH"
 
 # Trend/acceleration detector (C)
-def detector_level(comp_series: pd.Series) -> (str, float):
+def detector_level(comp_series: pd.Series):
     if comp_series is None or len(comp_series) < DELTA3M_W + 1:
         return "NA", np.nan
     comp_delta = float(comp_series.iloc[-1] - comp_series.iloc[-DELTA3M_W])
 
-    # Build weekly truth conditions
     yellow_cond = (comp_series > 0) & ((comp_series - comp_series.shift(DELTA3M_W)) > TH_YELLOW_D)
     red_cond    = ( (comp_series > TH_RED_LVL) | ((comp_series - comp_series.shift(DELTA3M_W)) > TH_RED_D) )
 
-    # Persistence (last PERSIST_W weeks must satisfy)
     def holds_persistently(mask: pd.Series) -> bool:
         if len(mask) < PERSIST_W: return False
         return bool(mask.tail(PERSIST_W).all())
@@ -525,7 +517,7 @@ def detector_level(comp_series: pd.Series) -> (str, float):
 
 det_level, comp_delta_3m = detector_level(composite_series)
 
-# Share calc for contributors table (based on absolute weighted contribution at snapshot)
+# Share calc for contributors table
 abs_sum = sum(abs(x[5]) for x in contrib_rows if x[5] is not None and not np.isnan(x[5])) or 0.0
 contrib_rows_out = []
 for (lbl, z_last, mom_txt, risk_last, w, w_contrib) in contrib_rows:
@@ -646,22 +638,13 @@ for r in display_rows:
         html.append(f"<tr><td>{r[0]}</td><td>{r[1]}</td><td class='num'>{r[2]}</td><td class='num'>{r[3]}</td></tr>")
 html.append("</table>")
 
-# Country cards (legacy view preserved)
+# Country cards (legacy view preserved) — FIXED sparkline & CSV links
 def spark_from_file(file_name: str, tail_points: int = 52) -> str:
     path = DATA_DIR / file_name
     s = load_series(path, weekly_resample=True)
     if s.empty:
         return ""
-    return (  # reuse same style as before
-        (lambda v: (
-            f"<svg width='120' height='26' viewBox='0 0 120 26' xmlns='http://www.w3.org/2000/svg'>"
-            f"<path d='{v}' fill='none' stroke='#1f77b4' stroke-width='1.5' /></svg>"
-        ))("M " + " L ".join([
-            f"{i*(120/(len(s.tail(tail_points))-1)):.1f},{26-2-((y - s.tail(tail_points).min())/"
-            f"{(s.tail(tail_points).max()-s.tail(tail_points).min() or 1.0)})*(26-4):.1f}"
-            for i, y in enumerate(s.tail(tail_points).tolist())
-        ]))
-    )
+    return sparkline_svg(s.tail(tail_points).tolist())
 
 for c in country_states:
     name = c["name"]
@@ -730,7 +713,6 @@ state = {
         {"name": x["name"], "subscore": None if x["subscore"] is None else round(float(x["subscore"]), 3), "level": x["level"]}
         for x in country_states
     ],
-    # Store weighted contributions by indicator label
     "contributions": {
         lbl: (None if (wc is None or np.isnan(wc)) else round(float(wc), 6))
         for (lbl, _z, _mom, _r, _w, wc, _sh) in contrib_rows_out
@@ -746,10 +728,9 @@ comp_hist = pd.DataFrame({
 }).dropna()
 if len(comp_hist) >= DELTA3M_W + 1:
     comp_hist["composite_delta_3m"] = comp_hist["composite"] - comp_hist["composite"].shift(DELTA3M_W)
-    # Detector level per row (optional coarse version, no persistence by row; persistence is applied at snapshot)
     comp_hist["detector_flag"] = np.where(
         (comp_hist["composite"] > TH_RED_LVL) | (comp_hist["composite_delta_3m"] > TH_RED_D), "RED",
-        np.where( (comp_hist["composite"] > 0) & (comp_hist["composite_delta_3m"] > TH_YELLOW_D), "YELLOW", "OK")
+        np.where((comp_hist["composite"] > 0) & (comp_hist["composite_delta_3m"] > TH_YELLOW_D), "YELLOW", "OK")
     )
 else:
     comp_hist["composite_delta_3m"] = np.nan
@@ -757,3 +738,4 @@ else:
 
 comp_hist.to_csv(OUT_DIR / "composite_history.csv", index=False)
 print("✅ Wrote output/composite_history.csv")
+``
